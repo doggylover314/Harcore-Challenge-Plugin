@@ -1,0 +1,19 @@
+name: HardcoreChallenge
+version: '${version}'
+main: io.github.doggylover314.hardcorechallenge.HardcoreChallengePlugin
+bootstrapper: io.github.doggylover314.hardcorechallenge.HardcoreChallengeBootstrap
+description: Shared-fate hardcore challenge. One death resets everyone into a brand new world.
+authors: [doggylover314]
+api-version: '26.2'
+load: POSTWORLD
+folia-supported: false
+
+permissions:
+  hardcorechallenge.admin:
+    description: Use every /hcc subcommand.
+    default: op
+    children:
+      hardcorechallenge.play: true
+  hardcorechallenge.play:
+    description: Take part in the challenge and use /hcc status.
+    default: true

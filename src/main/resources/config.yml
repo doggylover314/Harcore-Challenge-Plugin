@@ -1,0 +1,167 @@
+# HardcoreChallenge configuration. Everything here is re-read by /hcc reload.
+
+# Reset automatically when a death ends the run. When false, the player who died is out of the
+# run (they spectate) and the run carries on until an admin runs /hcc reset or /hcc stop.
+auto-reset-on-death: true
+
+# Seconds of countdown between the end of a run and everyone landing in the new world.
+# The new world is generated while the countdown runs.
+reset-countdown-seconds: 10
+
+# Whose death ends the run: "participants" or "anyone" (any player in a run world).
+reset-on-death-of: participants
+
+# true:  a participant who logs out (or goes back to the lobby) does not stall or end the run.
+#        If a reset happens while they are away, they are cleared and moved to the new world
+#        when they return.
+# false: a participant who logs out mid-run forfeits it, which ends the run like a death.
+offline-death-grace: true
+
+# peaceful | easy | normal | hard
+# "hard" also sets the vanilla hardcore flag on the run worlds (hardcore hearts). Paper documents
+# that hardcore worlds are locked to hard, so any other value creates the worlds without that flag.
+# The one-life rule is enforced by this plugin either way.
+difficulty: hard
+
+# How many past run folders to keep. 0 deletes old worlds outright. Above 0, old run folders are
+# moved to plugins/HardcoreChallenge/archive/ and only the newest N runs are kept there.
+keep-old-worlds: 0
+
+# Boss objectives for a run: ender_dragon, wither, elder_guardian, warden
+bosses:
+  - ender_dragon
+  - wither
+  - elder_guardian
+  - warden
+
+announce:
+  chat: true
+  title: true
+  bossbar: true
+  sound: true
+
+# Optional URL that receives a JSON POST when a run starts and ends. The body includes a
+# "content" field, so a Discord webhook URL works as-is.
+webhook-url: ""
+
+victory:
+  enabled: true
+  # false = the run is won as soon as any one boss from the list dies
+  require-all-bosses: true
+  # stop  = keep the world so people can look around; /hcc start makes a fresh one later
+  # reset = start the next run in a new world
+  action: stop
+  # Seconds everyone spectates the celebration before the action runs.
+  freeze-seconds: 30
+  fireworks: true
+
+# Sounds use namespaced sound keys, e.g. minecraft:entity.ender_dragon.death
+sounds:
+  countdown-tick: minecraft:block.note_block.hat
+  run-start: minecraft:entity.player.levelup
+  death: minecraft:entity.wither.spawn
+  boss-kill: minecraft:ui.toast.challenge_complete
+  victory: minecraft:ui.toast.challenge_complete
+
+# All messages are MiniMessage: https://docs.papermc.io/adventure/minimessage/format
+# Placeholders are listed next to each message. Player names and death causes are inserted as
+# plain text, so they cannot inject formatting.
+messages:
+  prefix: "<dark_gray>[<gradient:#ff4d4d:#ffb347>HCC</gradient>]</dark_gray> "
+
+  # <run> <seed> <bosses>
+  run-started: "<green>Run <white>#<run></white> has started. Bosses to kill: <white><bosses></white>. One life for everyone. Good luck."
+  run-started-title: "<green>Run #<run>"
+  run-started-subtitle: "<gray>One life. Everyone."
+
+  # <player> <cause> <killer> <death_message> <x> <y> <z> <world> <time> <run>
+  death: "<red><bold><player></bold> died</red> <gray>(<death_message>)</gray> <red>at <white><x> <y> <z></white> in <white><world></white> after <white><time></white>. Run #<run> is over."
+  death-title: "<dark_red><player> died"
+  death-subtitle: "<gray><cause> · <time>"
+  # Used when auto-reset-on-death is false: <player> <death_message> <time>
+  eliminated: "<red><player> is out of the run</red> <gray>(<death_message>)</gray>. The run continues."
+  # Used when offline-death-grace is false: <player> <time> <run>
+  forfeit: "<red><bold><player></bold> left the server and forfeited run #<run></red> <gray>after <time></gray>."
+
+  # <seconds> <reason>
+  countdown-title: "<red>New world in <white><seconds></white>"
+  countdown-subtitle: "<gray><reason>"
+  countdown-chat: "<gray>New world in <white><seconds></white>…"
+  resetting: "<yellow>Generating a new world… <gray>(<reason>)"
+  reset-forced: "<yellow><player> forced a reset<gray>: <reason>"
+  reset-failed: "<red>Could not create the next world: <error>. The run has been stopped; see the console."
+  default-reset-reason: "starting a new run"
+
+  # <boss> <count> <total> <time> <run>
+  boss-killed: "<gold><bold><boss></bold> has fallen!</gold> <gray>(<count>/<total>, <time>)</gray>"
+  boss-killed-title: "<gold><boss> defeated"
+  boss-killed-subtitle: "<yellow><count>/<total> bosses"
+
+  # <run> <time> <order> <participants>
+  victory-title: "<gradient:#ffd700:#ff8c00><bold>VICTORY"
+  victory-subtitle: "<yellow>Run #<run> cleared in <time>"
+  victory: "<gold><bold>Run #<run> is WON!</bold></gold> <yellow>Time: <white><time></white>. Kill order: <white><order></white>. Champions: <white><participants></white>."
+  victory-stop: "<gray>The world stays open for sightseeing. <white>/hcc start</white> begins a new run."
+
+  stopped: "<yellow>The challenge has been stopped by <player>. Everyone is spectating."
+  run-not-active: "<red>No run is active. Use /hcc start."
+  run-already-active: "<red>A run is already active. Use /hcc reset or /hcc stop first."
+  transition-in-progress: "<red>A reset is already in progress."
+  reloaded: "<green>Configuration reloaded."
+  no-participants: "<red>There are no participants and nobody online to add. Use /hcc participants add <player>."
+  participants-auto-added: "<gray>No participants were set, so everyone online was added: <white><players></white>."
+
+  # <player>
+  participant-added: "<green>Added <white><player></white> as a participant."
+  participant-already: "<yellow><player> is already a participant."
+  participant-removed: "<green>Removed <white><player></white> from the participants."
+  participant-not-found: "<red><player> is not a participant."
+  unknown-player: "<red>Unknown player <white><player></white> (they must have joined this server before)."
+  # <players> <count>
+  participants-list: "<gold>Participants (<count>):</gold> <players>"
+  participants-empty: "<gray>No participants yet."
+
+  status-header: "<gold><bold>Hardcore Challenge</bold></gold> <gray>- run #<run> · <phase>"
+  status-idle: "<gold><bold>Hardcore Challenge</bold></gold> <gray>- no run active (last run: #<run>)"
+  status-time: "<gray>Elapsed: <white><time></white>   Seed: <white><seed></white>   World: <white><world></white>"
+  status-boss-done: "  <green>✔ <boss></green> <gray>(<time>)"
+  status-boss-todo: "  <red>✘ <boss>"
+  status-participants: "<gray>Participants: <players>"
+  # Formatting for a name in participant lists
+  status-player-alive: "<green><name></green>"
+  status-player-offline: "<gray><name></gray>"
+  status-player-out: "<red><st><name></st></red>"
+
+  history-header: "<gold><bold>Last <count> run(s)</bold>"
+  history-empty: "<gray>No runs have finished yet."
+  # <run> <outcome> <time> <seed> <bosses> <ended>
+  history-entry: "<white>#<run></white> <outcome> <gray>·</gray> <white><time></white> <gray>· seed</gray> <white><seed></white> <gray>· bosses:</gray> <white><bosses></white> <gray>· <ended></gray>"
+  history-death: "   <red>☠ <player></red> <gray>died to <white><cause></white><killer> at <x> <y> <z> (<world>)</gray>"
+  history-reason: "   <gray>Reason: <reason>"
+  outcome-victory: "<gold><bold>WIN</bold></gold>"
+  outcome-death: "<red>DEATH</red>"
+  outcome-forced-reset: "<yellow>RESET</yellow>"
+  outcome-stopped: "<gray>STOPPED</gray>"
+  none: "none"
+
+  sidebar-title: "<gradient:#ff4d4d:#ffb347><bold>HARDCORE</bold></gradient>"
+  sidebar-run: "<gray>Run <white>#<run>"
+  sidebar-time: "<gray>Time <white><time>"
+  sidebar-boss-done: "<green>✔ <boss>"
+  sidebar-boss-todo: "<red>✘ <gray><boss>"
+  sidebar-players: "<gray>Alive <white><alive>/<total>"
+  sidebar-phase-resetting: "<yellow>Resetting…"
+  sidebar-phase-victory: "<gold>Victory!"
+
+  # <count> <total> <run> <time>
+  bossbar: "<gold>Bosses <white><count>/<total></white> <gray>·</gray> Run <white>#<run></white> <gray>·</gray> <white><time>"
+
+  help: |-
+    <gold><bold>Hardcore Challenge</bold></gold>
+    <yellow>/hcc start</yellow> <gray>- begin a new run in a fresh world</gray>
+    <yellow>/hcc reset [reason]</yellow> <gray>- force a reset now</gray>
+    <yellow>/hcc stop</yellow> <gray>- end the run; everyone spectates</gray>
+    <yellow>/hcc status</yellow> <gray>- run, time, bosses, participants</gray>
+    <yellow>/hcc participants add|remove|list [player]</yellow>
+    <yellow>/hcc history [n]</yellow> <gray>- recent runs</gray>
+    <yellow>/hcc reload</yellow> <gray>- reload config.yml</gray>
