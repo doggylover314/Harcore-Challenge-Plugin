@@ -136,7 +136,9 @@ public final class Hud {
         List<Component> lines = new ArrayList<>();
         lines.add(messages.plain("sidebar-run", Placeholder.unparsed("run", run)));
         lines.add(messages.plain("sidebar-time", Placeholder.unparsed("time", time)));
-        if (machine.phase() == RunPhase.RESETTING) {
+        if (machine.phase() == RunPhase.RUNNING && !machine.clockRunning()) {
+            lines.add(messages.plain("sidebar-phase-paused"));
+        } else if (machine.phase() == RunPhase.RESETTING) {
             lines.add(messages.plain("sidebar-phase-resetting"));
         } else if (machine.phase() == RunPhase.VICTORY) {
             lines.add(messages.plain("sidebar-phase-victory"));

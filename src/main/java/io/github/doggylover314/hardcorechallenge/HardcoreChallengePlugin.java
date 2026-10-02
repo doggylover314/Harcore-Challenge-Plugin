@@ -32,6 +32,7 @@ public final class HardcoreChallengePlugin extends JavaPlugin {
         plugins.registerEvents(new BossListener(created), this);
         plugins.registerEvents(new ConnectionListener(created), this);
         plugins.registerEvents(new PortalListener(created), this);
+        plugins.registerEvents(created.tracker(), this);
     }
 
     @Override

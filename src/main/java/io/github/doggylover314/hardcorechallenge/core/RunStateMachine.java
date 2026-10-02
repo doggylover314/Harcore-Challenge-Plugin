@@ -192,6 +192,27 @@ public final class RunStateMachine {
         return false;
     }
 
+    /**
+     * Stops the run clock without ending the run, e.g. while no participant is online.
+     * Has no effect unless a run is being played.
+     */
+    public void pauseClock() {
+        if (phase == RunPhase.RUNNING) {
+            clock.stop();
+        }
+    }
+
+    /** Restarts the run clock after {@link #pauseClock()}. */
+    public void resumeClock() {
+        if (phase == RunPhase.RUNNING) {
+            clock.start();
+        }
+    }
+
+    public boolean clockRunning() {
+        return clock.running();
+    }
+
     /** Ends the run and goes idle. The world name is kept so the world can be cleaned up later. */
     public RunPhase stop() {
         RunPhase previous = phase;
@@ -271,12 +292,6 @@ public final class RunStateMachine {
     /** Whether a run is in play or has just ended and still has its world, i.e. not idle. */
     public boolean isActive() {
         return phase != RunPhase.IDLE;
-    }
-
-    /** Builds the history entry for the run that just ended. */
-    public RunRecord toRecord(Outcome outcome, DeathRecord death, String reason) {
-        return new RunRecord(runNumber, seed, worldName, outcome, startedAt, wallClock.getAsLong(),
-                clock.elapsedMillis(), bossKills, death, reason);
     }
 
     // ---------------------------------------------------------------- persistence

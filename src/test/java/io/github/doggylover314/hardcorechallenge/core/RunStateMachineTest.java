@@ -2,7 +2,6 @@ package io.github.doggylover314.hardcorechallenge.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -131,10 +130,6 @@ class RunStateMachineTest {
             machine.resolvePendingDeath(6);
             advance(60_000);
             assertEquals(60_000L, machine.elapsedMillis());
-            RunRecord record = machine.toRecord(Outcome.DEATH, death("Steve"), null);
-            assertEquals(60_000L, record.durationMillis());
-            assertEquals(Outcome.DEATH, record.outcome());
-            assertFalse(record.isWin());
         }
     }
 
@@ -182,11 +177,8 @@ class RunStateMachineTest {
             assertEquals(RunStateMachine.BossResult.VICTORY, machine.reportBossKill(Boss.ENDER_DRAGON, 4));
             assertEquals(RunPhase.VICTORY, machine.phase());
 
-            RunRecord record = machine.toRecord(Outcome.VICTORY, null, null);
-            assertTrue(record.isWin());
             assertEquals(List.of(Boss.ELDER_GUARDIAN, Boss.WARDEN, Boss.WITHER, Boss.ENDER_DRAGON),
-                    record.bossKills().stream().map(BossKill::boss).toList());
-            assertNull(record.death());
+                    machine.bossKills().stream().map(BossKill::boss).toList());
         }
 
         @Test
@@ -305,6 +297,54 @@ class RunStateMachineTest {
             assertTrue(machine.beginTransition());
             machine.beginRun(machine.runNumber() + 1, "hcc_run_2", 9L);
             assertEquals(2, machine.runNumber());
+        }
+    }
+
+    @Nested
+    class Pausing {
+        @Test
+        void pausedClockDoesNotCount() {
+            startRun(1);
+            advance(10_000);
+            machine.pauseClock();
+            advance(60_000);
+            assertFalse(machine.clockRunning());
+            assertEquals(10_000L, machine.elapsedMillis());
+            machine.resumeClock();
+            advance(5_000);
+            assertEquals(15_000L, machine.elapsedMillis());
+        }
+
+        @Test
+        void bossKillTimesUseThePausedClock() {
+            startRun(1);
+            advance(1_000);
+            machine.pauseClock();
+            advance(100_000);
+            machine.resumeClock();
+            advance(1_000);
+            machine.reportBossKill(Boss.WITHER, 1);
+            assertEquals(2_000L, machine.bossKills().getFirst().elapsedMillis());
+        }
+
+        @Test
+        void pauseIsIgnoredOutsideARun() {
+            machine.pauseClock();
+            machine.resumeClock();
+            assertFalse(machine.clockRunning());
+            startRun(1);
+            machine.stop();
+            machine.resumeClock();
+            assertFalse(machine.clockRunning());
+        }
+
+        @Test
+        void pausedRunCanStillBeLost() {
+            startRun(1);
+            machine.pauseClock();
+            machine.reportDeath(death("Steve"), 1);
+            assertTrue(machine.resolvePendingDeath(2).isPresent());
+            assertEquals(RunPhase.RESETTING, machine.phase());
         }
     }
 

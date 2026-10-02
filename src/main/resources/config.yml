@@ -11,20 +11,7 @@ reset-countdown-seconds: 10
 # Whose death ends the run: "participants" or "anyone" (any player in a run world).
 reset-on-death-of: participants
 
-# true:  a participant who logs out (or goes back to the lobby) does not stall or end the run.
-#        If a reset happens while they are away, they are cleared and moved to the new world
-#        when they return.
-# false: a participant who logs out mid-run forfeits it, which ends the run like a death.
-offline-death-grace: true
-
-# peaceful | easy | normal | hard
-# "hard" also sets the vanilla hardcore flag on the run worlds (hardcore hearts). Paper documents
-# that hardcore worlds are locked to hard, so any other value creates the worlds without that flag.
-# The one-life rule is enforced by this plugin either way.
-difficulty: hard
-
-# How many past run folders to keep. 0 deletes old worlds outright. Above 0, old run folders are
-# moved to plugins/HardcoreChallenge/archive/ and only the newest N runs are kept there.
+# Old run folders to keep in plugins/HardcoreChallenge/archive/ (0 = delete them).
 keep-old-worlds: 0
 
 # Boss objectives for a run: ender_dragon, wither, elder_guardian, warden
@@ -80,8 +67,6 @@ messages:
   death-subtitle: "<gray><cause> · <time>"
   # Used when auto-reset-on-death is false: <player> <death_message> <time>
   eliminated: "<red><player> is out of the run</red> <gray>(<death_message>)</gray>. The run continues."
-  # Used when offline-death-grace is false: <player> <time> <run>
-  forfeit: "<red><bold><player></bold> left the server and forfeited run #<run></red> <gray>after <time></gray>."
 
   # <seconds> <reason>
   countdown-title: "<red>New world in <white><seconds></white>"
@@ -132,16 +117,11 @@ messages:
   status-player-offline: "<gray><name></gray>"
   status-player-out: "<red><st><name></st></red>"
 
-  history-header: "<gold><bold>Last <count> run(s)</bold>"
-  history-empty: "<gray>No runs have finished yet."
-  # <run> <outcome> <time> <seed> <bosses> <ended>
-  history-entry: "<white>#<run></white> <outcome> <gray>·</gray> <white><time></white> <gray>· seed</gray> <white><seed></white> <gray>· bosses:</gray> <white><bosses></white> <gray>· <ended></gray>"
-  history-death: "   <red>☠ <player></red> <gray>died to <white><cause></white><killer> at <x> <y> <z> (<world>)</gray>"
-  history-reason: "   <gray>Reason: <reason>"
   outcome-victory: "<gold><bold>WIN</bold></gold>"
   outcome-death: "<red>DEATH</red>"
   outcome-forced-reset: "<yellow>RESET</yellow>"
   outcome-stopped: "<gray>STOPPED</gray>"
+  outcome-live: "<aqua>LIVE</aqua>"
   none: "none"
 
   sidebar-title: "<gradient:#ff4d4d:#ffb347><bold>HARDCORE</bold></gradient>"
@@ -152,16 +132,70 @@ messages:
   sidebar-players: "<gray>Alive <white><alive>/<total>"
   sidebar-phase-resetting: "<yellow>Resetting…"
   sidebar-phase-victory: "<gold>Victory!"
+  sidebar-phase-paused: "<gray>Paused (nobody on)"
 
   # <count> <total> <run> <time>
   bossbar: "<gold>Bosses <white><count>/<total></white> <gray>·</gray> Run <white>#<run></white> <gray>·</gray> <white><time>"
 
+  # Runs list: /hcc runs, /hcc run <number>
+  runs-empty: "<gray>No runs yet."
+  runs-filter-all: "all"
+  runs-header: "<gold><bold>Runs</bold></gold> <gray>(<filter>, <count> total) - click one for details"
+  runs-line: "<white>#<run></white> <outcome> <gray><time> · <bosses> boss(es) · <players> · <date>"
+  runs-line-hover: "<gray>Show run #<run>"
+  page-prev: "<yellow>[« Prev]"
+  page-prev-disabled: "<dark_gray>[« Prev]"
+  page-next: "<yellow>[Next »]"
+  page-next-disabled: "<dark_gray>[Next »]"
+  page-info: "<gray>Page <page>/<pages>"
+
+  run-header: "<gold><bold>Run #<run></bold></gold> <outcome> <gray>· <time> · started <date>"
+  run-seed: "<gray>Seed: <white><seed></white><origin>"
+  run-seed-hover: "<gray>Click to copy the seed"
+  run-origin-replay: " <gray>· replay of #<of>"
+  run-origin-custom: " <gray>· custom seed"
+  run-players: "<gray>Players: <white><players>"
+  run-bosses: "<gray>Bosses: <bosses>"
+  run-boss: "<white><boss></white> <gray><time> (<player>)"
+  run-death: "<red>☠ <player></red> <gray>died to <white><cause></white><killer> at <x> <y> <z> (<world>)"
+  run-reason: "<gray>Reason: <reason>"
+  run-stats-header: "<gray>Players (boss damage share · boss kills · mobs · damage · distance · time played):"
+  run-stats-line: "  <white><player></white> <gray>· <yellow><share></yellow> · <boss_kills> · <mobs> · <damage> · <distance> · <played>"
+  run-button-timeline: "<aqua>[Timeline]"
+  run-button-replay: "<green>[Replay seed]"
+  run-button-delete: "<red>[Delete]"
+  run-button-back: "<gray>[Back to list]"
+  run-not-found: "<red>There is no run #<run>."
+  run-delete-live: "<red>That run is still being played."
+  run-delete-confirm: "<yellow>Delete run #<run> from the list? This can't be undone."
+  run-delete-button: "<red><bold>[Confirm]"
+  run-delete-expired: "<red>Nothing to confirm for run #<run>. Run /hcc run <run> delete again."
+  run-deleted: "<green>Deleted run #<run>."
+
+  timeline-header: "<gold><bold>Run #<run> timeline</bold></gold> <gray>(<count> events)"
+  timeline-line: "<gray><time></gray> <event>"
+  # Timeline entries: <player> and <detail> (boss, dimension, item, structure or outcome)
+  event-run-started: "<green>Run started"
+  event-joined: "<white><player></white> <gray>joined"
+  event-left: "<white><player></white> <gray>left"
+  event-participant-added: "<white><player></white> <gray>was added to the run"
+  event-participant-removed: "<white><player></white> <gray>was removed from the run"
+  event-dimension-first: "<white><player></white> <light_purple>entered <detail> first"
+  event-milestone: "<white><player></white> <aqua>got <detail> first"
+  event-structure-first: "<white><player></white> <aqua>found <detail> first"
+  event-boss-fight-started: "<white><player></white> <yellow>started the <detail> fight"
+  event-boss-killed: "<gold><detail> killed</gold> <gray>(final hit: <player>)"
+  event-eliminated: "<white><player></white> <red>is out (<detail>)"
+  event-death: "<red><player> died to <detail>"
+  event-run-ended: "<gray>Run ended: <detail>"
+
   help: |-
     <gold><bold>Hardcore Challenge</bold></gold>
-    <yellow>/hcc start</yellow> <gray>- begin a new run in a fresh world</gray>
+    <yellow>/hcc start [replay <run> | seed <seed>]</yellow> <gray>- begin a new run in a fresh world</gray>
     <yellow>/hcc reset [reason]</yellow> <gray>- force a reset now</gray>
     <yellow>/hcc stop</yellow> <gray>- end the run; everyone spectates</gray>
     <yellow>/hcc status</yellow> <gray>- run, time, bosses, participants</gray>
     <yellow>/hcc participants add|remove|list [player]</yellow>
-    <yellow>/hcc history [n]</yellow> <gray>- recent runs</gray>
+    <yellow>/hcc runs [wins|deaths|resets|stopped|player <name>] [page]</yellow> <gray>- every run</gray>
+    <yellow>/hcc run <number> [timeline|delete]</yellow> <gray>- one run in detail</gray>
     <yellow>/hcc reload</yellow> <gray>- reload config.yml</gray>

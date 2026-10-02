@@ -25,7 +25,7 @@ public final class BossListener implements Listener {
     public void onEntityDeath(EntityDeathEvent event) {
         Boss boss = fromType(event.getEntityType());
         if (boss != null) {
-            manager.handleBossDeath(boss, event.getEntity().getWorld());
+            manager.handleBossDeath(boss, event.getEntity().getWorld(), event.getEntity().getKiller());
         }
     }
 
@@ -36,11 +36,12 @@ public final class BossListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDragonPhase(EnderDragonChangePhaseEvent event) {
         if (event.getNewPhase() == EnderDragon.Phase.DYING) {
-            manager.handleBossDeath(Boss.ENDER_DRAGON, event.getEntity().getWorld());
+            manager.handleBossDeath(Boss.ENDER_DRAGON, event.getEntity().getWorld(), event.getEntity().getKiller());
         }
     }
 
-    private static Boss fromType(EntityType type) {
+    /** The boss objective for an entity type, or {@code null}. */
+    public static Boss fromType(EntityType type) {
         if (type == EntityType.ENDER_DRAGON) {
             return Boss.ENDER_DRAGON;
         }

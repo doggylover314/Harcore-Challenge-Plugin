@@ -2,11 +2,8 @@ package io.github.doggylover314.hardcorechallenge.data;
 
 import io.github.doggylover314.hardcorechallenge.core.Boss;
 import io.github.doggylover314.hardcorechallenge.core.BossKill;
-import io.github.doggylover314.hardcorechallenge.core.DeathRecord;
-import io.github.doggylover314.hardcorechallenge.core.Outcome;
 import io.github.doggylover314.hardcorechallenge.core.Roster;
 import io.github.doggylover314.hardcorechallenge.core.RunPhase;
-import io.github.doggylover314.hardcorechallenge.core.RunRecord;
 import io.github.doggylover314.hardcorechallenge.core.RunSnapshot;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -19,7 +16,6 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -36,27 +32,21 @@ import org.bukkit.configuration.file.YamlConfiguration;
  * Reads and writes the plugin's data files:
  * <ul>
  *   <li>{@code state.yml} - the current run and the participants</li>
- *   <li>{@code history.yml} - completed runs</li>
  *   <li>{@code pending-deletions.yml} - world folders that could not be deleted yet</li>
  * </ul>
  * YAML is serialised on the calling (main) thread and written to disk on a single IO thread, so
  * writes happen in order and never block a tick.
  */
 public final class DataStore {
-    private static final int MAX_HISTORY = 500;
-
     private final Path stateFile;
-    private final Path historyFile;
     private final Path pendingFile;
     private final Logger logger;
     private final ExecutorService io;
 
-    private final List<RunRecord> history = new ArrayList<>();
     private final Set<String> pendingDeletions = new LinkedHashSet<>();
 
     public DataStore(Path dataFolder, Logger logger) {
         this.stateFile = dataFolder.resolve("state.yml");
-        this.historyFile = dataFolder.resolve("history.yml");
         this.pendingFile = dataFolder.resolve("pending-deletions.yml");
         this.logger = logger;
         this.io = Executors.newSingleThreadExecutor(runnable -> {
@@ -144,54 +134,6 @@ public final class DataStore {
         return yaml.saveToString();
     }
 
-    // ---------------------------------------------------------------- history
-
-    public void loadHistory() {
-        history.clear();
-        YamlConfiguration yaml = read(historyFile);
-        if (yaml == null) {
-            return;
-        }
-        for (Map<?, ?> entry : yaml.getMapList("runs")) {
-            try {
-                history.add(readRecord(entry));
-            } catch (RuntimeException e) {
-                logger.log(Level.WARNING, "Skipping unreadable history entry " + entry, e);
-            }
-        }
-    }
-
-    public List<RunRecord> history() {
-        return List.copyOf(history);
-    }
-
-    /** The newest {@code count} runs, newest first. */
-    public List<RunRecord> recentHistory(int count) {
-        List<RunRecord> recent = new ArrayList<>();
-        for (int i = history.size() - 1; i >= 0 && recent.size() < count; i--) {
-            recent.add(history.get(i));
-        }
-        return recent;
-    }
-
-    public void appendHistory(RunRecord record) {
-        history.add(record);
-        while (history.size() > MAX_HISTORY) {
-            history.removeFirst();
-        }
-        writeAsync(historyFile, serializeHistory());
-    }
-
-    private String serializeHistory() {
-        YamlConfiguration yaml = new YamlConfiguration();
-        List<Map<String, Object>> runs = new ArrayList<>();
-        for (RunRecord record : history) {
-            runs.add(writeRecord(record));
-        }
-        yaml.set("runs", runs);
-        return yaml.saveToString();
-    }
-
     // ------------------------------------------------------- pending deletions
 
     public void loadPendingDeletions() {
@@ -265,7 +207,8 @@ public final class DataStore {
         }
     }
 
-    private void writeAsync(Path file, String content) {
+    /** Writes a file on the IO thread (atomically, via a temp file). */
+    public void writeAsync(Path file, String content) {
         try {
             io.execute(() -> writeNow(file, content));
         } catch (java.util.concurrent.RejectedExecutionException e) {
@@ -274,7 +217,21 @@ public final class DataStore {
         }
     }
 
-    private void writeNow(Path file, String content) {
+    public void deleteAsync(Path file) {
+        try {
+            io.execute(() -> {
+                try {
+                    Files.deleteIfExists(file);
+                } catch (IOException e) {
+                    logger.log(Level.WARNING, "Could not delete " + file, e);
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            logger.warning("Shutting down; could not delete " + file);
+        }
+    }
+
+    public void writeNow(Path file, String content) {
         try {
             Files.createDirectories(file.getParent());
             Path temp = file.resolveSibling(file.getFileName() + ".tmp");
@@ -318,70 +275,6 @@ public final class DataStore {
                     .ifPresent(boss -> kills.add(new BossKill(boss, asLong(map.get("elapsed-millis")))));
         }
         return kills;
-    }
-
-    private static Map<String, Object> writeRecord(RunRecord record) {
-        Map<String, Object> map = new LinkedHashMap<>();
-        map.put("run", record.runNumber());
-        map.put("seed", record.seed());
-        map.put("world", record.worldName());
-        map.put("outcome", record.outcome().name().toLowerCase(Locale.ROOT));
-        map.put("started-at", record.startedAt());
-        map.put("ended-at", record.endedAt());
-        map.put("duration-millis", record.durationMillis());
-        map.put("boss-kills", writeKills(record.bossKills()));
-        if (record.reason() != null) {
-            map.put("reason", record.reason());
-        }
-        DeathRecord death = record.death();
-        if (death != null) {
-            Map<String, Object> d = new LinkedHashMap<>();
-            d.put("uuid", death.playerId().toString());
-            d.put("player", death.playerName());
-            d.put("cause", death.cause());
-            if (death.killer() != null) {
-                d.put("killer", death.killer());
-            }
-            if (death.message() != null) {
-                d.put("message", death.message());
-            }
-            d.put("world", death.world());
-            d.put("x", death.x());
-            d.put("y", death.y());
-            d.put("z", death.z());
-            map.put("death", d);
-        }
-        return map;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static RunRecord readRecord(Map<?, ?> map) {
-        DeathRecord death = null;
-        Object rawDeath = map.get("death");
-        if (rawDeath instanceof Map<?, ?> d) {
-            death = new DeathRecord(
-                    UUID.fromString(String.valueOf(d.get("uuid"))),
-                    String.valueOf(d.get("player")),
-                    String.valueOf(d.get("cause")),
-                    d.get("killer") == null ? null : String.valueOf(d.get("killer")),
-                    d.get("message") == null ? null : String.valueOf(d.get("message")),
-                    d.get("world") == null ? null : String.valueOf(d.get("world")),
-                    (int) asLong(d.get("x")),
-                    (int) asLong(d.get("y")),
-                    (int) asLong(d.get("z")));
-        }
-        Object kills = map.get("boss-kills");
-        return new RunRecord(
-                (int) asLong(map.get("run")),
-                asLong(map.get("seed")),
-                map.get("world") == null ? null : String.valueOf(map.get("world")),
-                Outcome.valueOf(String.valueOf(map.get("outcome")).toUpperCase(Locale.ROOT)),
-                asLong(map.get("started-at")),
-                asLong(map.get("ended-at")),
-                asLong(map.get("duration-millis")),
-                kills instanceof List<?> list ? readKills((List<? extends Map<?, ?>>) list) : List.of(),
-                death,
-                map.get("reason") == null ? null : String.valueOf(map.get("reason")));
     }
 
     private static long asLong(Object value) {

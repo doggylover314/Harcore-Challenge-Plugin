@@ -80,7 +80,7 @@ public final class WorldService {
      * Creates (or loads, if the folders already exist) the three worlds of a run, one per tick.
      * Must be called on the main thread; the future completes on the main thread.
      */
-    public CompletableFuture<RunWorlds> create(int runNumber, long seed, boolean hardcore, Difficulty difficulty) {
+    public CompletableFuture<RunWorlds> create(int runNumber, long seed) {
         CompletableFuture<RunWorlds> future = new CompletableFuture<>();
         World[] created = new World[3];
         World.Environment[] environments = {World.Environment.NORMAL, World.Environment.NETHER, World.Environment.THE_END};
@@ -94,7 +94,7 @@ public final class WorldService {
                     return;
                 }
                 try {
-                    World world = createOne(names.get(index), environments[index], seed, hardcore, difficulty, true);
+                    World world = createOne(names.get(index), environments[index], seed, true);
                     created[index] = world;
                     if (index == 0) {
                         // Look for ground while the other two dimensions are being created.
@@ -128,14 +128,14 @@ public final class WorldService {
      * @param forceSpawn skip vanilla's spawn search, which generates chunks on the main thread; the
      *                   real spawn is found asynchronously afterwards. Ignored for worlds that exist.
      */
-    private World createOne(String name, World.Environment environment, long seed, boolean hardcore, Difficulty difficulty, boolean forceSpawn) {
+    private World createOne(String name, World.Environment environment, long seed, boolean forceSpawn) {
         World world = Bukkit.getWorld(name);
         if (world == null) {
             // minecraft:<name> keys keep the world name exactly equal to hcc_run_<n>[_nether|_the_end].
             WorldCreator creator = WorldCreator.ofKey(NamespacedKey.minecraft(name))
                     .environment(environment)
                     .seed(seed)
-                    .hardcore(hardcore);
+                    .hardcore(true);
             if (forceSpawn) {
                 creator.forcedSpawnPosition(Position.block(8, 64, 8), 0f, 0f);
             }
@@ -144,23 +144,23 @@ public final class WorldService {
         if (world == null) {
             throw new IllegalStateException("The server refused to create world " + name);
         }
-        world.setDifficulty(difficulty);
+        world.setDifficulty(Difficulty.HARD);
         return world;
     }
 
     /**
      * Loads the worlds of a run that was in progress when the server stopped.
      */
-    public Optional<RunWorlds> load(int runNumber, long seed, List<String> knownPaths, boolean hardcore, Difficulty difficulty) {
+    public Optional<RunWorlds> load(int runNumber, long seed, List<String> knownPaths) {
         for (String raw : knownPaths) {
             if (!Files.isDirectory(Paths.get(raw))) {
                 logger.warning("World folder " + raw + " is missing; it will be regenerated from seed " + seed + ".");
             }
         }
         try {
-            World overworld = createOne(WorldNames.overworld(runNumber), World.Environment.NORMAL, seed, hardcore, difficulty, false);
-            World nether = createOne(WorldNames.nether(runNumber), World.Environment.NETHER, seed, hardcore, difficulty, false);
-            World end = createOne(WorldNames.end(runNumber), World.Environment.THE_END, seed, hardcore, difficulty, false);
+            World overworld = createOne(WorldNames.overworld(runNumber), World.Environment.NORMAL, seed, false);
+            World nether = createOne(WorldNames.nether(runNumber), World.Environment.NETHER, seed, false);
+            World end = createOne(WorldNames.end(runNumber), World.Environment.THE_END, seed, false);
             return Optional.of(new RunWorlds(overworld, nether, end));
         } catch (RuntimeException e) {
             logger.log(Level.SEVERE, "Could not load the worlds of run #" + runNumber, e);

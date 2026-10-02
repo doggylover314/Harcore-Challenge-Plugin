@@ -10,10 +10,15 @@ import io.github.doggylover314.hardcorechallenge.core.DeathRecord;
 import io.github.doggylover314.hardcorechallenge.core.Outcome;
 import io.github.doggylover314.hardcorechallenge.core.Roster;
 import io.github.doggylover314.hardcorechallenge.core.RunPhase;
-import io.github.doggylover314.hardcorechallenge.core.RunRecord;
+import io.github.doggylover314.hardcorechallenge.core.RunLog;
+import io.github.doggylover314.hardcorechallenge.core.RunQuery;
+import io.github.doggylover314.hardcorechallenge.core.TimelineEvent;
 import io.github.doggylover314.hardcorechallenge.core.RunStateMachine;
 import io.github.doggylover314.hardcorechallenge.core.TimeFormat;
 import io.github.doggylover314.hardcorechallenge.data.DataStore;
+import io.github.doggylover314.hardcorechallenge.data.RunArchive;
+import io.github.doggylover314.hardcorechallenge.tracking.RunTracker;
+import io.github.doggylover314.hardcorechallenge.ui.RunReports;
 import io.github.doggylover314.hardcorechallenge.player.PlayerResetter;
 import io.github.doggylover314.hardcorechallenge.ui.Announcer;
 import io.github.doggylover314.hardcorechallenge.ui.Hud;
@@ -24,10 +29,10 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.security.SecureRandom;
 import java.time.Duration;
-import java.time.Instant;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -37,6 +42,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.logging.Logger;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.JoinConfiguration;
+import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
@@ -62,14 +68,15 @@ import org.bukkit.scheduler.BukkitTask;
  * <p>Everything here runs on the main server thread.</p>
  */
 public final class ChallengeManager {
-    private static final DateTimeFormatter HISTORY_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault());
-
     private final HardcoreChallengePlugin plugin;
     private final Logger logger;
     private final DataStore store;
     private final WorldService worlds;
     private final RunStateMachine machine;
     private final Webhook webhook;
+    private final RunArchive archive;
+    private final RunTracker tracker;
+    private final RunReports reports;
     private final SecureRandom random = new SecureRandom();
 
     private Settings settings;
@@ -90,6 +97,10 @@ public final class ChallengeManager {
     private boolean resolveScheduled;
     /** Vanilla death message of the pending death, shown when it resolves. */
     private Component pendingDeathMessage;
+    /** Log of the run being played (null when no run is being played). */
+    private RunLog live;
+    /** Pending "/hcc run <n> delete" confirmations: sender name -> run number and expiry. */
+    private final Map<String, long[]> pendingDeletes = new HashMap<>();
 
     public ChallengeManager(HardcoreChallengePlugin plugin, Settings settings, Messages messages) {
         this.plugin = plugin;
@@ -100,13 +111,16 @@ public final class ChallengeManager {
         this.worlds = new WorldService(plugin, store, () -> currentPaths);
         this.machine = new RunStateMachine(() -> System.nanoTime() / 1_000_000L, System::currentTimeMillis);
         this.webhook = new Webhook(logger);
+        this.archive = new RunArchive(plugin.getDataPath(), store, logger);
+        this.tracker = new RunTracker(this);
+        this.reports = new RunReports(() -> this.messages, run -> machine.elapsedMillis());
     }
 
     // =================================================================== lifecycle
 
     public void enable() {
         DataStore.PersistedState state = store.loadState();
-        store.loadHistory();
+        archive.load();
         store.loadPendingDeletions();
 
         machine.restore(state.run());
@@ -118,7 +132,9 @@ public final class ChallengeManager {
         hud = new Hud(machine, this::aliveParticipantCount, roster::size, settings, messages);
 
         resume();
+        recoverRunLogs();
         worlds.processPendingDeletions();
+        updateClock();
 
         ticker = Bukkit.getScheduler().runTaskTimer(plugin, this::tickSecond, 20L, 20L);
     }
@@ -128,7 +144,7 @@ public final class ChallengeManager {
         int run = machine.runNumber();
         switch (phase) {
             case RUNNING, VICTORY -> {
-                Optional<RunWorlds> loaded = worlds.load(run, machine.seed(), currentPaths, settings.hardcoreFlag(), settings.difficulty());
+                Optional<RunWorlds> loaded = worlds.load(run, machine.seed(), currentPaths);
                 if (loaded.isEmpty()) {
                     logger.severe("Run #" + run + " could not be resumed because its worlds failed to load. The run has been stopped.");
                     machine.stop();
@@ -147,12 +163,12 @@ public final class ChallengeManager {
             }
             case RESETTING -> {
                 logger.info("The server stopped during a reset; starting run #" + (run + 1) + " now.");
-                Bukkit.getScheduler().runTask(plugin, () -> runTransition("resuming after a restart"));
+                Bukkit.getScheduler().runTask(plugin, () -> runTransition("resuming after a restart", SeedChoice.RANDOM));
             }
             case IDLE -> {
                 // Keep the last world around for sightseeing if it still exists.
                 if (run > 0 && !currentPaths.isEmpty() && currentPaths.stream().allMatch(p -> Files.isDirectory(Paths.get(p)))) {
-                    worlds.load(run, machine.seed(), currentPaths, settings.hardcoreFlag(), settings.difficulty())
+                    worlds.load(run, machine.seed(), currentPaths)
                             .ifPresent(loaded -> current = loaded);
                 }
             }
@@ -163,8 +179,7 @@ public final class ChallengeManager {
     public void disable() {
         if (machine.hasPendingDeath()) {
             // A death was waiting for the next tick; it stands.
-            machine.resolvePendingDeath(Long.MAX_VALUE).ifPresent(death ->
-                    store.appendHistory(machine.toRecord(Outcome.DEATH, death, null)));
+            machine.resolvePendingDeath(Long.MAX_VALUE).ifPresent(death -> endLog(Outcome.DEATH, death, null));
         }
         cancel(ticker);
         cancel(victoryTask);
@@ -178,6 +193,10 @@ public final class ChallengeManager {
         worlds.shutdown();
         store.shutdown();
         store.saveStateNow(persistedState());
+        if (live != null) {
+            tracker.sample();
+            archive.saveNow(live);
+        }
     }
 
     public void reload() {
@@ -197,10 +216,15 @@ public final class ChallengeManager {
     }
 
     private void tickSecond() {
+        updateClock();
+        tracker.sample();
         hud.update();
         // Checkpoint the clock periodically so a crash loses at most a minute of run time.
         if (machine.phase() == RunPhase.RUNNING && Bukkit.getCurrentTick() % 1200 < 20) {
             save();
+            if (live != null) {
+                archive.save(live);
+            }
         }
     }
 
@@ -253,6 +277,31 @@ public final class ChallengeManager {
 
     /** /hcc start */
     public void start(CommandSender sender) {
+        start(sender, SeedChoice.RANDOM);
+    }
+
+    /** /hcc start replay <run> */
+    public void startReplay(CommandSender sender, int runNumber) {
+        RunLog past = archive.get(runNumber);
+        if (past == null) {
+            sender.sendMessage(messages.chat("run-not-found", Placeholder.unparsed("run", String.valueOf(runNumber))));
+            return;
+        }
+        start(sender, new SeedChoice(past.seed(), runNumber, false));
+    }
+
+    /** /hcc start seed <seed>. Text that isn't a number is hashed like vanilla does. */
+    public void startWithSeed(CommandSender sender, String rawSeed) {
+        long seed;
+        try {
+            seed = Long.parseLong(rawSeed.trim());
+        } catch (NumberFormatException e) {
+            seed = rawSeed.trim().hashCode();
+        }
+        start(sender, new SeedChoice(seed, null, true));
+    }
+
+    private void start(CommandSender sender, SeedChoice choice) {
         switch (machine.phase()) {
             case RUNNING, VICTORY -> sender.sendMessage(messages.chat("run-already-active"));
             case RESETTING -> sender.sendMessage(messages.chat("transition-in-progress"));
@@ -262,7 +311,7 @@ public final class ChallengeManager {
                 }
                 machine.beginTransition();
                 save();
-                runTransition(messages.raw("default-reset-reason"));
+                runTransition(messages.raw("default-reset-reason"), choice);
             }
         }
     }
@@ -282,14 +331,12 @@ public final class ChallengeManager {
         cancel(victoryTask);
         cancel(fireworksTask);
         if (phase == RunPhase.RUNNING) {
-            RunRecord record = machine.toRecord(Outcome.FORCED_RESET, null, why);
-            store.appendHistory(record);
-            postRunEnd(record);
+            postRunEnd(endLog(Outcome.FORCED_RESET, null, why));
         }
         announcer.chat("reset-forced", Placeholder.unparsed("player", sender.getName()), Placeholder.unparsed("reason", why));
         machine.beginTransition();
         save();
-        runTransition(why);
+        runTransition(why, SeedChoice.RANDOM);
     }
 
     /** /hcc stop */
@@ -300,9 +347,7 @@ public final class ChallengeManager {
             return;
         }
         if (phase == RunPhase.RUNNING) {
-            RunRecord record = machine.toRecord(Outcome.STOPPED, null, "stopped by " + sender.getName());
-            store.appendHistory(record);
-            postRunEnd(record);
+            postRunEnd(endLog(Outcome.STOPPED, null, "stopped by " + sender.getName()));
         }
         cancel(victoryTask);
         cancel(fireworksTask);
@@ -320,7 +365,7 @@ public final class ChallengeManager {
      * Runs the countdown and creates the next world at the same time. When both are done, everyone is
      * moved over and the old worlds are retired. The machine must already be in RESETTING.
      */
-    private void runTransition(String reason) {
+    private void runTransition(String reason, SeedChoice choice) {
         cancelTransition();
         cancel(victoryTask);
         cancel(fireworksTask);
@@ -329,8 +374,8 @@ public final class ChallengeManager {
         while (worlds.isRunNumberTaken(newRun)) {
             newRun++;
         }
-        long seed = newSeed(machine.seed());
-        transition = new Transition(machine.runNumber(), currentPaths, newRun, reason);
+        long seed = choice.seed() != null ? choice.seed() : newSeed(machine.seed());
+        transition = new Transition(machine.runNumber(), currentPaths, newRun, reason, choice);
 
         for (Player player : Bukkit.getOnlinePlayers()) {
             player.setGameMode(GameMode.SPECTATOR);
@@ -344,7 +389,7 @@ public final class ChallengeManager {
         // time should overlap the countdown rather than extend it.
         t.deadlineMillis = System.currentTimeMillis() + settings.resetCountdownSeconds() * 1000L;
         t.countdownTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> countdownTick(t), 0L, 5L);
-        worlds.create(newRun, seed, settings.hardcoreFlag(), settings.difficulty()).whenComplete((created, error) -> {
+        worlds.create(newRun, seed).whenComplete((created, error) -> {
             if (t.cancelled) {
                 if (created != null) {
                     // Nobody will use these; clean them up.
@@ -401,6 +446,14 @@ public final class ChallengeManager {
         current = next;
         currentPaths = next.paths();
         roster.clearEliminations();
+        if (t.choice.seed() != null && t.choice.seed() != machine.seed()) {
+            logger.warning("Run #" + t.newRun + " reused an existing world folder, so its seed is " + machine.seed()
+                    + " instead of the requested " + t.choice.seed());
+        }
+        live = new RunLog(t.newRun, machine.seed(), machine.worldName(), machine.startedAt(), t.choice.replayOf(), t.choice.custom());
+        roster.participants().forEach(live::addParticipant);
+        tracker.reset();
+        logEvent(TimelineEvent.Type.RUN_STARTED, null, null);
         save();
 
         Location spawn = next.spawn();
@@ -411,6 +464,7 @@ public final class ChallengeManager {
 
         hud.showAll();
         announceRunStart();
+        updateClock();
 
         CompletableFuture.allOf(moves.toArray(CompletableFuture[]::new)).whenComplete((ignored, error) ->
                 onMain(() -> {
@@ -548,6 +602,7 @@ public final class ChallengeManager {
         DeathRecord death = describeDeath(player, event, vanillaMessage);
         if (!settings.autoResetOnDeath()) {
             roster.eliminate(player.getUniqueId());
+            logEvent(TimelineEvent.Type.ELIMINATED, player.getName(), death.cause());
             save();
             hud.update();
             announcer.chatAlways("eliminated",
@@ -559,18 +614,15 @@ public final class ChallengeManager {
         reportRunEndingDeath(death, vanillaMessage);
     }
 
-    /** Participant logged out while offline-death-grace is off. */
+    /** Disconnecting never ends a run; it only shows up in the timeline and may pause the clock. */
     public void handleQuit(Player player) {
-        if (machine.phase() != RunPhase.RUNNING || settings.offlineDeathGrace() || !roster.isActive(player.getUniqueId())) {
-            return;
+        if (machine.phase() == RunPhase.RUNNING && roster.isParticipant(player.getUniqueId())) {
+            tracker.sample();
+            logEvent(TimelineEvent.Type.LEFT, player.getName(), null);
         }
-        Location loc = player.getLocation();
-        DeathRecord forfeit = new DeathRecord(player.getUniqueId(), player.getName(), "disconnected", null,
-                player.getName() + " left the game", loc.getWorld().getName(), loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
-        roster.eliminate(player.getUniqueId());
-        if (machine.reportDeath(forfeit, Bukkit.getCurrentTick()) == RunStateMachine.DeathResult.PENDING) {
-            scheduleResolve();
-        }
+        tracker.forget(player.getUniqueId());
+        // The player still counts as online during the quit event.
+        Bukkit.getScheduler().runTask(plugin, this::updateClock);
     }
 
     private void reportRunEndingDeath(DeathRecord death, Component vanillaMessage) {
@@ -594,8 +646,7 @@ public final class ChallengeManager {
     }
 
     private void endRunByDeath(DeathRecord death) {
-        RunRecord record = machine.toRecord(Outcome.DEATH, death, null);
-        store.appendHistory(record);
+        RunLog record = endLog(Outcome.DEATH, death, null);
         save();
 
         Component message = pendingDeathMessage != null ? pendingDeathMessage : Component.text(death.message() != null ? death.message() : death.cause());
@@ -612,16 +663,12 @@ public final class ChallengeManager {
                 Placeholder.unparsed("world", death.world() == null ? "?" : death.world()),
                 Placeholder.unparsed("time", time),
                 Placeholder.unparsed("run", String.valueOf(record.runNumber()))};
-        if ("disconnected".equals(death.cause())) {
-            announcer.chatAlways("forfeit", placeholders);
-        } else {
-            announcer.chatAlways("death", placeholders);
-        }
+        announcer.chatAlways("death", placeholders);
         announcer.title("death-title", "death-subtitle", Duration.ofSeconds(3), placeholders);
         announcer.sound("death");
         postRunEnd(record);
 
-        runTransition(death.playerName() + " died");
+        runTransition(death.playerName() + " died", SeedChoice.RANDOM);
     }
 
     private DeathRecord describeDeath(Player player, PlayerDeathEvent event, Component vanillaMessage) {
@@ -650,13 +697,19 @@ public final class ChallengeManager {
 
     // ==================================================================== bosses
 
-    public void handleBossDeath(Boss boss, World world) {
+    public void handleBossDeath(Boss boss, World world, Player killer) {
         if (!isRunWorld(world)) {
             return;
         }
         RunStateMachine.BossResult result = machine.reportBossKill(boss, Bukkit.getCurrentTick());
         if (result != RunStateMachine.BossResult.RECORDED && result != RunStateMachine.BossResult.VICTORY) {
             return;
+        }
+        if (live != null) {
+            boolean credited = killer != null && roster.isParticipant(killer.getUniqueId());
+            live.bossKilled(boss, machine.elapsedMillis(),
+                    credited ? killer.getUniqueId() : null, credited ? killer.getName() : null);
+            logEvent(TimelineEvent.Type.BOSS_KILLED, credited ? killer.getName() : null, boss.id());
         }
         save();
         int total = machine.trackedBosses().size();
@@ -678,8 +731,7 @@ public final class ChallengeManager {
     }
 
     private void startVictory() {
-        RunRecord record = machine.toRecord(Outcome.VICTORY, null, null);
-        store.appendHistory(record);
+        RunLog record = endLog(Outcome.VICTORY, null, null);
         save();
 
         for (Player player : Bukkit.getOnlinePlayers()) {
@@ -713,7 +765,7 @@ public final class ChallengeManager {
         if (settings.victoryAction() == Settings.VictoryAction.RESET) {
             machine.beginTransition();
             save();
-            runTransition("run #" + machine.runNumber() + " was won");
+            runTransition("run #" + machine.runNumber() + " was won", SeedChoice.RANDOM);
         } else {
             machine.stop();
             hud.hide();
@@ -771,7 +823,10 @@ public final class ChallengeManager {
         return String.join(", ", bosses.stream().map(Boss::displayName).toList());
     }
 
-    private void postRunEnd(RunRecord record) {
+    private void postRunEnd(RunLog record) {
+        if (record == null) {
+            return;
+        }
         JsonObject payload = new JsonObject();
         payload.addProperty("event", "run_end");
         payload.addProperty("run", record.runNumber());
@@ -831,6 +886,10 @@ public final class ChallengeManager {
         }
         Location spawn = current.spawn();
 
+        if (phase == RunPhase.RUNNING && roster.isParticipant(id)) {
+            logEvent(TimelineEvent.Type.JOINED, player.getName(), null);
+            updateClock();
+        }
         if (phase == RunPhase.RUNNING && roster.isActive(id)) {
             if (roster.needsSync(id, machine.runNumber())) {
                 // They were away when the run changed: bring them into the new one fresh.
@@ -863,9 +922,14 @@ public final class ChallengeManager {
             return;
         }
         Player online = target.getPlayer();
+        if (machine.phase() == RunPhase.RUNNING && live != null) {
+            live.addParticipant(target.getUniqueId(), targetName);
+            logEvent(TimelineEvent.Type.PARTICIPANT_ADDED, targetName, null);
+        }
         if (online != null && machine.phase() == RunPhase.RUNNING && current != null) {
             moveIntoRun(online, current.spawn());
         }
+        updateClock();
         save();
         hud.update();
         sender.sendMessage(messages.chat("participant-added", Placeholder.unparsed("player", targetName)));
@@ -885,6 +949,10 @@ public final class ChallengeManager {
             return;
         }
         roster.remove(match);
+        if (machine.phase() == RunPhase.RUNNING && live != null) {
+            logEvent(TimelineEvent.Type.PARTICIPANT_REMOVED, matchName, null);
+        }
+        updateClock();
         Player online = Bukkit.getPlayer(match);
         if (online != null && machine.phase() != RunPhase.IDLE) {
             online.setGameMode(GameMode.SPECTATOR);
@@ -974,36 +1042,181 @@ public final class ChallengeManager {
                 Placeholder.component("players", roster.isEmpty() ? messages.plain("none") : participantNames())));
     }
 
-    public void sendHistory(CommandSender sender, int count) {
-        List<RunRecord> recent = store.recentHistory(count);
-        if (recent.isEmpty()) {
-            sender.sendMessage(messages.chat("history-empty"));
+    /** /hcc runs [filter] [page] */
+    public void sendRuns(CommandSender sender, Outcome outcome, String player, int page) {
+        List<RunLog> runs = RunQuery.filter(archive.all(), outcome, player);
+        String base = "/hcc runs";
+        String label = messages.raw("runs-filter-all");
+        if (outcome != null) {
+            String name = outcomeFilterName(outcome);
+            base += " " + name;
+            label = name;
+        } else if (player != null) {
+            base += " player " + player;
+            label = player;
+        }
+        reports.sendList(sender, runs, page, base, label);
+    }
+
+    /** The /hcc runs filter word for an outcome. */
+    public static String outcomeFilterName(Outcome outcome) {
+        return switch (outcome) {
+            case VICTORY -> "wins";
+            case DEATH -> "deaths";
+            case FORCED_RESET -> "resets";
+            case STOPPED -> "stopped";
+        };
+    }
+
+    /** /hcc run <n> */
+    public void sendRun(CommandSender sender, int runNumber) {
+        RunLog run = archive.get(runNumber);
+        if (run == null) {
+            sender.sendMessage(messages.chat("run-not-found", Placeholder.unparsed("run", String.valueOf(runNumber))));
             return;
         }
-        sender.sendMessage(messages.chat("history-header", Placeholder.unparsed("count", String.valueOf(recent.size()))));
-        for (RunRecord record : recent) {
-            String outcomeKey = "outcome-" + record.outcome().name().toLowerCase(Locale.ROOT).replace('_', '-');
-            sender.sendMessage(messages.plain("history-entry",
-                    Placeholder.unparsed("run", String.valueOf(record.runNumber())),
-                    Placeholder.component("outcome", messages.plain(outcomeKey)),
-                    Placeholder.unparsed("time", TimeFormat.clock(record.durationMillis())),
-                    Placeholder.unparsed("seed", String.valueOf(record.seed())),
-                    Placeholder.unparsed("bosses", record.bossKills().isEmpty() ? messages.raw("none") : killOrder(record.bossKills())),
-                    Placeholder.unparsed("ended", HISTORY_TIME.format(Instant.ofEpochMilli(record.endedAt())))));
-            DeathRecord death = record.death();
-            if (death != null) {
-                sender.sendMessage(messages.plain("history-death",
-                        Placeholder.unparsed("player", death.playerName()),
-                        Placeholder.unparsed("cause", death.cause()),
-                        Placeholder.unparsed("killer", death.killer() == null ? "" : " (" + death.killer() + ")"),
-                        Placeholder.unparsed("x", String.valueOf(death.x())),
-                        Placeholder.unparsed("y", String.valueOf(death.y())),
-                        Placeholder.unparsed("z", String.valueOf(death.z())),
-                        Placeholder.unparsed("world", death.world() == null ? "?" : death.world())));
+        reports.sendDetail(sender, run);
+    }
+
+    /** /hcc run <n> timeline [page] */
+    public void sendTimeline(CommandSender sender, int runNumber, int page) {
+        RunLog run = archive.get(runNumber);
+        if (run == null) {
+            sender.sendMessage(messages.chat("run-not-found", Placeholder.unparsed("run", String.valueOf(runNumber))));
+            return;
+        }
+        reports.sendTimeline(sender, run, page);
+    }
+
+    /** /hcc run <n> delete: asks for confirmation. */
+    public void requestDelete(CommandSender sender, int runNumber) {
+        RunLog run = archive.get(runNumber);
+        if (run == null) {
+            sender.sendMessage(messages.chat("run-not-found", Placeholder.unparsed("run", String.valueOf(runNumber))));
+            return;
+        }
+        if (run.isLive()) {
+            sender.sendMessage(messages.chat("run-delete-live"));
+            return;
+        }
+        pendingDeletes.put(sender.getName(), new long[] {runNumber, System.currentTimeMillis() + 30_000L});
+        sender.sendMessage(messages.chat("run-delete-confirm", Placeholder.unparsed("run", String.valueOf(runNumber)))
+                .append(Component.space())
+                .append(messages.plain("run-delete-button")
+                        .clickEvent(ClickEvent.runCommand("/hcc run " + runNumber + " delete confirm"))));
+    }
+
+    /** /hcc run <n> delete confirm */
+    public void confirmDelete(CommandSender sender, int runNumber) {
+        long[] pending = pendingDeletes.remove(sender.getName());
+        if (pending == null || pending[0] != runNumber || pending[1] < System.currentTimeMillis()) {
+            sender.sendMessage(messages.chat("run-delete-expired", Placeholder.unparsed("run", String.valueOf(runNumber))));
+            return;
+        }
+        RunLog run = archive.get(runNumber);
+        if (run == null || run.isLive() || !archive.delete(runNumber)) {
+            sender.sendMessage(messages.chat("run-not-found", Placeholder.unparsed("run", String.valueOf(runNumber))));
+            return;
+        }
+        sender.sendMessage(messages.chat("run-deleted", Placeholder.unparsed("run", String.valueOf(runNumber))));
+    }
+
+    /** Run numbers in the list, newest first, for tab completion. */
+    public List<Integer> runNumbers() {
+        List<Integer> numbers = new ArrayList<>();
+        for (RunLog run : RunQuery.filter(archive.all(), null, null)) {
+            numbers.add(run.runNumber());
+        }
+        return numbers;
+    }
+
+    /** Names of everyone who has taken part in a run, for tab completion. */
+    public List<String> knownPlayerNames() {
+        Set<String> names = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        for (RunLog run : archive.all()) {
+            names.addAll(run.participants().values());
+        }
+        return new ArrayList<>(names);
+    }
+
+    // ================================================================= run log
+
+    public RunTracker tracker() {
+        return tracker;
+    }
+
+    public RunLog liveRun() {
+        return live;
+    }
+
+    /** Adds an entry to the live run's timeline. */
+    public void logEvent(TimelineEvent.Type type, String player, String detail) {
+        if (live == null) {
+            return;
+        }
+        live.event(new TimelineEvent(machine.elapsedMillis(), System.currentTimeMillis(), type, player, detail));
+        archive.save(live);
+    }
+
+    /** Finishes the live run's log and stores it. Returns the finished log, or null if there was none. */
+    private RunLog endLog(Outcome outcome, DeathRecord death, String reason) {
+        if (live == null) {
+            return null;
+        }
+        tracker.sample();
+        long now = System.currentTimeMillis();
+        if (death != null) {
+            live.event(new TimelineEvent(machine.elapsedMillis(), now, TimelineEvent.Type.DEATH, death.playerName(), death.cause()));
+        }
+        live.event(new TimelineEvent(machine.elapsedMillis(), now, TimelineEvent.Type.RUN_ENDED, null,
+                outcome.name().toLowerCase(Locale.ROOT)));
+        live.finish(outcome, now, machine.elapsedMillis(), death, reason);
+        RunLog finished = live;
+        live = null;
+        archive.save(finished);
+        return finished;
+    }
+
+    /**
+     * After a restart: pick up the log of the run being resumed, and close logs left open by a crash.
+     */
+    private void recoverRunLogs() {
+        int current = machine.runNumber();
+        for (RunLog run : new ArrayList<>(archive.all())) {
+            if (!run.isLive()) {
+                continue;
             }
-            if (record.reason() != null) {
-                sender.sendMessage(messages.plain("history-reason", Placeholder.unparsed("reason", record.reason())));
+            if (run.runNumber() == current && machine.phase() == RunPhase.RUNNING) {
+                live = run;
+            } else {
+                run.finish(Outcome.STOPPED, System.currentTimeMillis(), run.durationMillis(), null, "server stopped unexpectedly");
+                archive.save(run);
             }
+        }
+        if (live == null && machine.phase() == RunPhase.RUNNING) {
+            live = new RunLog(current, machine.seed(), machine.worldName(), machine.startedAt(), null, false);
+            roster.participants().forEach(live::addParticipant);
+            archive.save(live);
+        }
+    }
+
+    /** The run clock only runs while at least one participant who is still in the run is online. */
+    private void updateClock() {
+        if (machine.phase() != RunPhase.RUNNING) {
+            return;
+        }
+        boolean anyoneOn = false;
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            if (roster.isActive(player.getUniqueId())) {
+                anyoneOn = true;
+                break;
+            }
+        }
+        if (anyoneOn) {
+            machine.resumeClock();
+        } else if (machine.clockRunning()) {
+            machine.pauseClock();
+            save();
         }
     }
 
@@ -1028,12 +1241,18 @@ public final class ChallengeManager {
         }
     }
 
+    /** How the next run's seed is chosen: random, a past run's seed, or one an admin typed. */
+    private record SeedChoice(Long seed, Integer replayOf, boolean custom) {
+        static final SeedChoice RANDOM = new SeedChoice(null, null, false);
+    }
+
     /** State of one reset in progress. */
     private static final class Transition {
         final int oldRun;
         final List<String> oldPaths;
         final int newRun;
         final String reason;
+        final SeedChoice choice;
         long deadlineMillis;
         int lastShownSecond = -1;
         BukkitTask countdownTask;
@@ -1042,7 +1261,8 @@ public final class ChallengeManager {
         boolean completed;
         boolean cancelled;
 
-        Transition(int oldRun, List<String> oldPaths, int newRun, String reason) {
+        Transition(int oldRun, List<String> oldPaths, int newRun, String reason, SeedChoice choice) {
+            this.choice = choice;
             this.oldRun = oldRun;
             this.oldPaths = List.copyOf(oldPaths);
             this.newRun = newRun;

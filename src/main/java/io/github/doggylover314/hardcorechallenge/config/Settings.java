@@ -5,7 +5,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.logging.Logger;
-import org.bukkit.Difficulty;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 
@@ -16,8 +15,6 @@ public record Settings(
         boolean autoResetOnDeath,
         int resetCountdownSeconds,
         ResetOnDeathOf resetOnDeathOf,
-        boolean offlineDeathGrace,
-        Difficulty difficulty,
         int keepOldWorlds,
         List<Boss> bosses,
         boolean announceChat,
@@ -55,8 +52,6 @@ public record Settings(
                 config.getBoolean("auto-reset-on-death", true),
                 Math.max(0, config.getInt("reset-countdown-seconds", 10)),
                 parseEnum(ResetOnDeathOf.class, config.getString("reset-on-death-of"), ResetOnDeathOf.PARTICIPANTS, "reset-on-death-of", logger),
-                config.getBoolean("offline-death-grace", true),
-                parseEnum(Difficulty.class, config.getString("difficulty"), Difficulty.HARD, "difficulty", logger),
                 Math.max(0, config.getInt("keep-old-worlds", 0)),
                 List.copyOf(bosses),
                 config.getBoolean("announce.chat", true),
@@ -71,11 +66,6 @@ public record Settings(
                 config.getBoolean("victory.fireworks", true),
                 config.getConfigurationSection("sounds")
         );
-    }
-
-    /** Whether the run worlds get the vanilla hardcore flag (which locks difficulty to hard). */
-    public boolean hardcoreFlag() {
-        return difficulty == Difficulty.HARD;
     }
 
     public String sound(String key) {
