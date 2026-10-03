@@ -21,6 +21,10 @@ Kill the Ender Dragon, Wither, Elder Guardian and Warden in one run to win.
 - Paper 26.2
 - Java 25
 
+## Download
+
+Grab [`dist/HardcoreChallenge-1.0.0.jar`](dist/HardcoreChallenge-1.0.0.jar), or build it yourself.
+
 ## Building
 
 ```
