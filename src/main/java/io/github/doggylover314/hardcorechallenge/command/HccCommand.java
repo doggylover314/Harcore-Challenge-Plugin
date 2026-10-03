@@ -63,21 +63,6 @@ public final class HccCommand {
                         .executes(ctx -> run(ctx, manager, ChallengeManager::stop)))
                 .then(Commands.literal("status")
                         .executes(ctx -> run(ctx, manager, ChallengeManager::sendStatus)))
-                .then(Commands.literal("participants")
-                        .requires(HccCommand::isAdmin)
-                        .executes(ctx -> run(ctx, manager, ChallengeManager::listParticipants))
-                        .then(Commands.literal("list")
-                                .executes(ctx -> run(ctx, manager, ChallengeManager::listParticipants)))
-                        .then(Commands.literal("add")
-                                .then(Commands.argument("player", StringArgumentType.word())
-                                        .suggests((ctx, builder) -> suggest(builder, manager, true))
-                                        .executes(ctx -> run(ctx, manager, (m, sender) ->
-                                                m.addParticipant(sender, StringArgumentType.getString(ctx, "player"))))))
-                        .then(Commands.literal("remove")
-                                .then(Commands.argument("player", StringArgumentType.word())
-                                        .suggests((ctx, builder) -> suggest(builder, manager, false))
-                                        .executes(ctx -> run(ctx, manager, (m, sender) ->
-                                                m.removeParticipant(sender, StringArgumentType.getString(ctx, "player")))))))
                 .then(runsNode("runs", manager))
                 .then(runsNode("history", manager))
                 .then(Commands.literal("run")
@@ -183,18 +168,5 @@ public final class HccCommand {
         }
         action.run(manager, sender);
         return Command.SINGLE_SUCCESS;
-    }
-
-    private static CompletableFuture<Suggestions> suggest(SuggestionsBuilder builder, Supplier<ChallengeManager> supplier, boolean adding) {
-        ChallengeManager manager = supplier.get();
-        if (manager != null) {
-            String typed = builder.getRemainingLowerCase();
-            for (String name : manager.participantNames(adding)) {
-                if (name.toLowerCase(Locale.ROOT).startsWith(typed)) {
-                    builder.suggest(name);
-                }
-            }
-        }
-        return builder.buildFuture();
     }
 }

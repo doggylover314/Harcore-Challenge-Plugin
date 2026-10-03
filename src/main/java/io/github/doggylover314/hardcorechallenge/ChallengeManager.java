@@ -51,7 +51,6 @@ import org.bukkit.Color;
 import org.bukkit.FireworkEffect;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
-import org.bukkit.OfflinePlayer;
 import org.bukkit.World;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Entity;
@@ -306,7 +305,7 @@ public final class ChallengeManager {
             case RUNNING, VICTORY -> sender.sendMessage(messages.chat("run-already-active"));
             case RESETTING -> sender.sendMessage(messages.chat("transition-in-progress"));
             case IDLE -> {
-                if (!ensureParticipants(sender)) {
+                if (!takeOnlinePlayers(sender)) {
                     return;
                 }
                 machine.beginTransition();
@@ -550,22 +549,18 @@ public final class ChallengeManager {
         return seed;
     }
 
-    private boolean ensureParticipants(CommandSender sender) {
-        if (!roster.isEmpty()) {
-            return true;
-        }
-        List<String> added = new ArrayList<>();
+    /** Everyone online (with hardcorechallenge.play) is in the challenge; anyone who joins later is added. */
+    private boolean takeOnlinePlayers(CommandSender sender) {
+        roster.clear();
         for (Player player : Bukkit.getOnlinePlayers()) {
             if (player.hasPermission(HardcoreChallengePlugin.PERMISSION_PLAY)) {
                 roster.add(player.getUniqueId(), player.getName());
-                added.add(player.getName());
             }
         }
-        if (added.isEmpty()) {
-            sender.sendMessage(messages.chat("no-participants"));
+        if (roster.isEmpty()) {
+            sender.sendMessage(messages.chat("no-players"));
             return false;
         }
-        announcer.chat("participants-auto-added", Placeholder.unparsed("players", String.join(", ", added)));
         return true;
     }
 
@@ -886,10 +881,19 @@ public final class ChallengeManager {
         }
         Location spawn = current.spawn();
 
-        if (phase == RunPhase.RUNNING && roster.isParticipant(id)) {
+        if (!roster.isParticipant(id) && player.hasPermission(HardcoreChallengePlugin.PERMISSION_PLAY)) {
+            // New player: they're in the challenge now. needsSync is true, so they're wiped and moved in below.
+            roster.add(id, player.getName());
+            if (phase == RunPhase.RUNNING && live != null) {
+                live.addParticipant(id, player.getName());
+                logEvent(TimelineEvent.Type.PARTICIPANT_ADDED, player.getName(), null);
+            }
+            save();
+            hud.update();
+        } else if (phase == RunPhase.RUNNING && roster.isParticipant(id)) {
             logEvent(TimelineEvent.Type.JOINED, player.getName(), null);
-            updateClock();
         }
+        updateClock();
         if (phase == RunPhase.RUNNING && roster.isActive(id)) {
             if (roster.needsSync(id, machine.runNumber())) {
                 // They were away when the run changed: bring them into the new one fresh.
@@ -901,7 +905,8 @@ public final class ChallengeManager {
             return;
         }
 
-        // Spectators: non-participants, eliminated participants, or anyone during a reset / victory.
+        // Spectators: players without hardcorechallenge.play, players who are out of this run
+        // (auto-reset-on-death: false), or anyone during a reset / victory.
         player.setGameMode(GameMode.SPECTATOR);
         if (!isRunWorld(player.getWorld())) {
             player.teleportAsync(spawn);
@@ -909,90 +914,6 @@ public final class ChallengeManager {
     }
 
     // ============================================================ participants
-
-    public void addParticipant(CommandSender sender, String name) {
-        OfflinePlayer target = resolvePlayer(name);
-        if (target == null) {
-            sender.sendMessage(messages.chat("unknown-player", Placeholder.unparsed("player", name)));
-            return;
-        }
-        String targetName = target.getName() != null ? target.getName() : name;
-        if (!roster.add(target.getUniqueId(), targetName)) {
-            sender.sendMessage(messages.chat("participant-already", Placeholder.unparsed("player", targetName)));
-            return;
-        }
-        Player online = target.getPlayer();
-        if (machine.phase() == RunPhase.RUNNING && live != null) {
-            live.addParticipant(target.getUniqueId(), targetName);
-            logEvent(TimelineEvent.Type.PARTICIPANT_ADDED, targetName, null);
-        }
-        if (online != null && machine.phase() == RunPhase.RUNNING && current != null) {
-            moveIntoRun(online, current.spawn());
-        }
-        updateClock();
-        save();
-        hud.update();
-        sender.sendMessage(messages.chat("participant-added", Placeholder.unparsed("player", targetName)));
-    }
-
-    public void removeParticipant(CommandSender sender, String name) {
-        UUID match = null;
-        String matchName = name;
-        for (Map.Entry<UUID, String> entry : roster.participants().entrySet()) {
-            if (entry.getValue().equalsIgnoreCase(name)) {
-                match = entry.getKey();
-                matchName = entry.getValue();
-            }
-        }
-        if (match == null) {
-            sender.sendMessage(messages.chat("participant-not-found", Placeholder.unparsed("player", name)));
-            return;
-        }
-        roster.remove(match);
-        if (machine.phase() == RunPhase.RUNNING && live != null) {
-            logEvent(TimelineEvent.Type.PARTICIPANT_REMOVED, matchName, null);
-        }
-        updateClock();
-        Player online = Bukkit.getPlayer(match);
-        if (online != null && machine.phase() != RunPhase.IDLE) {
-            online.setGameMode(GameMode.SPECTATOR);
-        }
-        save();
-        hud.update();
-        sender.sendMessage(messages.chat("participant-removed", Placeholder.unparsed("player", matchName)));
-    }
-
-    public void listParticipants(CommandSender sender) {
-        if (roster.isEmpty()) {
-            sender.sendMessage(messages.chat("participants-empty"));
-            return;
-        }
-        sender.sendMessage(messages.chat("participants-list",
-                Placeholder.component("players", participantNames()),
-                Placeholder.unparsed("count", String.valueOf(roster.size()))));
-    }
-
-    public List<String> participantNames(boolean includeOnlineNonParticipants) {
-        List<String> names = new ArrayList<>();
-        if (includeOnlineNonParticipants) {
-            for (Player player : Bukkit.getOnlinePlayers()) {
-                if (!roster.isParticipant(player.getUniqueId())) {
-                    names.add(player.getName());
-                }
-            }
-        } else {
-            names.addAll(roster.participants().values());
-        }
-        return names;
-    }
-
-    private static OfflinePlayer resolvePlayer(String name) {
-        Player online = Bukkit.getPlayerExact(name);
-        if (online != null) {
-            return online;
-        }
-        return Bukkit.getOfflinePlayerIfCached(name);
-    }
 
     private Component participantNames() {
         List<Component> names = new ArrayList<>();

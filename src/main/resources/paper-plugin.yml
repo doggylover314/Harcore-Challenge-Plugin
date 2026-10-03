@@ -15,5 +15,5 @@ permissions:
     children:
       hardcorechallenge.play: true
   hardcorechallenge.play:
-    description: Take part in the challenge and use /hcc status.
+    description: Be part of the challenge (added automatically) and use /hcc status. Without it, players only spectate.
     default: true

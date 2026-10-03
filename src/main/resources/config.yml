@@ -93,18 +93,7 @@ messages:
   run-already-active: "<red>A run is already active. Use /hcc reset or /hcc stop first."
   transition-in-progress: "<red>A reset is already in progress."
   reloaded: "<green>Configuration reloaded."
-  no-participants: "<red>There are no participants and nobody online to add. Use /hcc participants add <player>."
-  participants-auto-added: "<gray>No participants were set, so everyone online was added: <white><players></white>."
-
-  # <player>
-  participant-added: "<green>Added <white><player></white> as a participant."
-  participant-already: "<yellow><player> is already a participant."
-  participant-removed: "<green>Removed <white><player></white> from the participants."
-  participant-not-found: "<red><player> is not a participant."
-  unknown-player: "<red>Unknown player <white><player></white> (they must have joined this server before)."
-  # <players> <count>
-  participants-list: "<gold>Participants (<count>):</gold> <players>"
-  participants-empty: "<gray>No participants yet."
+  no-players: "<red>Nobody online can play (they need hardcorechallenge.play)."
 
   status-header: "<gold><bold>Hardcore Challenge</bold></gold> <gray>- run #<run> · <phase>"
   status-idle: "<gold><bold>Hardcore Challenge</bold></gold> <gray>- no run active (last run: #<run>)"
@@ -178,8 +167,7 @@ messages:
   event-run-started: "<green>Run started"
   event-joined: "<white><player></white> <gray>joined"
   event-left: "<white><player></white> <gray>left"
-  event-participant-added: "<white><player></white> <gray>was added to the run"
-  event-participant-removed: "<white><player></white> <gray>was removed from the run"
+  event-participant-added: "<white><player></white> <gray>joined the challenge"
   event-dimension-first: "<white><player></white> <light_purple>entered <detail> first"
   event-milestone: "<white><player></white> <aqua>got <detail> first"
   event-structure-first: "<white><player></white> <aqua>found <detail> first"
@@ -195,7 +183,6 @@ messages:
     <yellow>/hcc reset [reason]</yellow> <gray>- force a reset now</gray>
     <yellow>/hcc stop</yellow> <gray>- end the run; everyone spectates</gray>
     <yellow>/hcc status</yellow> <gray>- run, time, bosses, participants</gray>
-    <yellow>/hcc participants add|remove|list [player]</yellow>
     <yellow>/hcc runs [wins|deaths|resets|stopped|player <name>] [page]</yellow> <gray>- every run</gray>
     <yellow>/hcc run <number> [timeline|delete]</yellow> <gray>- one run in detail</gray>
     <yellow>/hcc reload</yellow> <gray>- reload config.yml</gray>

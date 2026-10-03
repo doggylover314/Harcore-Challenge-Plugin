@@ -18,7 +18,6 @@ public record TimelineEvent(long elapsedMillis, long at, Type type, String playe
         JOINED,
         LEFT,
         PARTICIPANT_ADDED,
-        PARTICIPANT_REMOVED,
         DIMENSION_FIRST,
         MILESTONE,
         STRUCTURE_FIRST,

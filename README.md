@@ -30,8 +30,13 @@ The jar ends up in `build/libs/`. Gradle downloads JDK 25 if you don't have it.
 ## Installing
 
 1. Drop the jar in `plugins/` and restart the server.
-2. Add players with `/hcc participants add <name>`. If you skip this, `/hcc start` adds everyone online.
-3. Run `/hcc start`.
+2. Run `/hcc start`.
+
+## Who's playing
+
+- Everyone online when you run `/hcc start` is in the challenge.
+- Anyone who joins while a challenge is going is added and dropped into the current run.
+- Players without the `hardcorechallenge.play` permission only spectate.
 
 ## Commands
 
@@ -43,7 +48,6 @@ The jar ends up in `build/libs/`. Gradle downloads JDK 25 if you don't have it.
 | `/hcc reset [reason]` | End the current run and start a new one |
 | `/hcc stop` | End the run, everyone spectates |
 | `/hcc status` | Current run, time, bosses, players |
-| `/hcc participants add\|remove\|list` | Manage who's playing |
 | `/hcc runs [page]` | All runs, newest first |
 | `/hcc runs wins\|deaths\|resets\|stopped` | Filter by outcome |
 | `/hcc runs player <name>` | Runs a player was in |
@@ -57,7 +61,7 @@ The jar ends up in `build/libs/`. Gradle downloads JDK 25 if you don't have it.
 ## Permissions
 
 - `hardcorechallenge.admin` (op): everything
-- `hardcorechallenge.play` (everyone): play and use `/hcc status`
+- `hardcorechallenge.play` (everyone): be in the challenge and use `/hcc status`
 
 ## What gets saved per run
 
@@ -89,5 +93,7 @@ See `config.yml`. All of it can be reloaded with `/hcc reload`. Main options:
 - Runs are always on hard difficulty with the hardcore flag set.
 - Run worlds are named `hcc_run_<n>`, `hcc_run_<n>_nether` and `hcc_run_<n>_the_end`.
   The server's main world is never touched.
+- New worlds skip vanilla's spawn point search, because it freezes the whole server for several
+  seconds. The plugin picks dry land near 0,0 instead, without blocking the server.
 - How fast a reset is depends on how fast the server can generate a new world.
   More chunk worker threads (`chunk-system.worker-threads` in `paper-global.yml`) help.
