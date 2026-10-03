@@ -9,12 +9,17 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Who is taking part in the challenge, who is out of the current run, and which run each
- * participant's inventory and position belong to.
+ * Who is taking part in the challenge, who is actually in the current run, who is out of it, and
+ * which run each participant's inventory and position belong to.
+ *
+ * <p>The participants are everyone who has joined the challenge since the last /hcc start. The
+ * "in run" set is the subset that was moved into the current run (at its start or later, when they
+ * joined); it is cleared whenever a new run begins.</p>
  */
 public final class Roster {
     private final Map<UUID, String> participants = new LinkedHashMap<>();
     private final Set<UUID> eliminated = new LinkedHashSet<>();
+    private final Set<UUID> inRun = new LinkedHashSet<>();
     private final Map<UUID, Integer> syncedRun = new HashMap<>();
 
     public boolean add(UUID id, String name) {
@@ -25,6 +30,7 @@ public final class Roster {
 
     public boolean remove(UUID id) {
         eliminated.remove(id);
+        inRun.remove(id);
         syncedRun.remove(id);
         return participants.remove(id) != null;
     }
@@ -52,8 +58,65 @@ public final class Roster {
         return eliminated.contains(id);
     }
 
+    /** Un-eliminates a participant. Returns whether they were out. */
+    public boolean revive(UUID id) {
+        return eliminated.remove(id);
+    }
+
     public void clearEliminations() {
         eliminated.clear();
+    }
+
+    /** A new run begins: nobody is out and nobody is in it yet. */
+    public void beginRun() {
+        eliminated.clear();
+        inRun.clear();
+    }
+
+    /** Marks a participant as being in the current run. Returns false if they aren't a participant. */
+    public boolean joinRun(UUID id) {
+        if (!participants.containsKey(id)) {
+            return false;
+        }
+        inRun.add(id);
+        return true;
+    }
+
+    public boolean isInRun(UUID id) {
+        return inRun.contains(id);
+    }
+
+    /** Participants of the current run that haven't been eliminated, online or not. */
+    public int aliveInRun() {
+        int alive = 0;
+        for (UUID id : inRun) {
+            if (!eliminated.contains(id)) {
+                alive++;
+            }
+        }
+        return alive;
+    }
+
+    /** Participants of the current run that have been eliminated. */
+    public int deadInRun() {
+        return inRun.size() - aliveInRun();
+    }
+
+    /** Number of participants in the current run, eliminated or not. */
+    public int runSize() {
+        return inRun.size();
+    }
+
+    /** The participants of the current run (id to name), in the order they joined it. */
+    public Map<UUID, String> runParticipants() {
+        Map<UUID, String> result = new LinkedHashMap<>();
+        for (UUID id : inRun) {
+            String name = participants.get(id);
+            if (name != null) {
+                result.put(id, name);
+            }
+        }
+        return result;
     }
 
     /** Records that this participant's player state now belongs to the given run. */
@@ -79,6 +142,10 @@ public final class Roster {
         return Collections.unmodifiableSet(eliminated);
     }
 
+    public Set<UUID> inRun() {
+        return Collections.unmodifiableSet(inRun);
+    }
+
     public Map<UUID, Integer> syncedRuns() {
         return Collections.unmodifiableMap(syncedRun);
     }
@@ -94,6 +161,7 @@ public final class Roster {
     public void clear() {
         participants.clear();
         eliminated.clear();
+        inRun.clear();
         syncedRun.clear();
     }
 }

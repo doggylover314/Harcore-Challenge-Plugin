@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -57,5 +58,64 @@ class RosterTest {
         roster.updateName(alex, "Alex");
         assertEquals("Steve2", roster.participants().get(steve));
         assertFalse(roster.isParticipant(alex));
+    }
+
+    @Test
+    void onlyPlayersMovedIntoTheRunCount() {
+        Roster roster = new Roster();
+        roster.add(steve, "Steve");
+        roster.add(alex, "Alex");
+        assertEquals(0, roster.runSize());
+        assertFalse(roster.joinRun(UUID.randomUUID()));
+
+        assertTrue(roster.joinRun(steve));
+        assertTrue(roster.isInRun(steve));
+        assertFalse(roster.isInRun(alex));
+        assertEquals(1, roster.runSize());
+        assertEquals(Map.of(steve, "Steve"), roster.runParticipants());
+    }
+
+    @Test
+    void aliveAndDeadCountOnlyTheRun() {
+        Roster roster = new Roster();
+        roster.add(steve, "Steve");
+        roster.add(alex, "Alex");
+        roster.joinRun(steve);
+        roster.joinRun(alex);
+        roster.eliminate(alex);
+        assertEquals(1, roster.aliveInRun());
+        assertEquals(1, roster.deadInRun());
+
+        assertTrue(roster.revive(alex));
+        assertFalse(roster.revive(alex));
+        assertEquals(2, roster.aliveInRun());
+        assertEquals(0, roster.deadInRun());
+    }
+
+    @Test
+    void beginningARunEmptiesIt() {
+        Roster roster = new Roster();
+        roster.add(steve, "Steve");
+        roster.add(alex, "Alex");
+        roster.joinRun(steve);
+        roster.joinRun(alex);
+        roster.eliminate(alex);
+
+        roster.beginRun();
+        assertEquals(0, roster.runSize());
+        assertTrue(roster.isParticipant(alex));
+        assertTrue(roster.isActive(alex));
+        assertTrue(roster.runParticipants().isEmpty());
+    }
+
+    @Test
+    void removedParticipantsLeaveTheRun() {
+        Roster roster = new Roster();
+        roster.add(steve, "Steve");
+        roster.joinRun(steve);
+        roster.remove(steve);
+        assertEquals(0, roster.runSize());
+        roster.clear();
+        assertTrue(roster.inRun().isEmpty());
     }
 }

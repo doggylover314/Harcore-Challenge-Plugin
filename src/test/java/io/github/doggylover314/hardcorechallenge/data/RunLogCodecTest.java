@@ -70,6 +70,22 @@ class RunLogCodecTest {
     }
 
     @Test
+    void liveCheckpointSurvivesTheRoundTrip() {
+        RunLog live = new RunLog(9, 1L, "hcc_run_9", 100L, null, false);
+        live.checkpoint(45_000L, 145_000L);
+        RunLog copy = RunLogCodec.decode((Map<?, ?>) new Yaml().load(new Yaml().dump(RunLogCodec.encode(live))));
+        assertTrue(copy.isLive());
+        assertEquals(45_000L, copy.checkpointMillis());
+        assertEquals(145_000L, copy.checkpointAt());
+        assertEquals(45_000L, copy.recoveredDurationMillis());
+    }
+
+    @Test
+    void finishedRunsDoNotCarryACheckpoint() {
+        assertFalse(RunLogCodec.encode(finishedRun()).containsKey("checkpoint-millis"));
+    }
+
+    @Test
     void unknownTimelineEntriesAreSkipped() {
         Map<String, Object> map = RunLogCodec.encode(finishedRun());
         ((java.util.List<Map<String, Object>>) map.get("timeline")).getFirst().put("type", "from_the_future");

@@ -6,7 +6,9 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.BooleanSupplier;
 import io.papermc.paper.registry.RegistryAccess;
 import io.papermc.paper.registry.RegistryKey;
 import io.papermc.paper.registry.keys.tags.BiomeTagKeys;
@@ -51,13 +53,21 @@ final class SpawnFinder {
         this.plugin = plugin;
     }
 
-    /** Completes on the main thread with a location to spawn players at. */
-    CompletableFuture<Location> find(World world) {
+    /**
+     * Completes on the main thread with a location to spawn players at. Completes exceptionally
+     * (rather than never) if anything in the search throws, or if {@code cancelled} turns true or
+     * the world is unloaded while it runs.
+     */
+    CompletableFuture<Location> find(World world, BooleanSupplier cancelled) {
         CompletableFuture<Location> result = new CompletableFuture<>();
-        long started = System.currentTimeMillis();
-        List<int[]> candidates = candidates(world);
-        samplingMillis = System.currentTimeMillis() - started;
-        tryBatch(world, candidates, 0, started, result);
+        try {
+            long started = System.currentTimeMillis();
+            List<int[]> candidates = candidates(world);
+            samplingMillis = System.currentTimeMillis() - started;
+            tryBatch(world, candidates, 0, started, result, cancelled);
+        } catch (RuntimeException e) {
+            result.completeExceptionally(e);
+        }
         return result;
     }
 
@@ -65,19 +75,31 @@ final class SpawnFinder {
      * Requests a batch of chunks at once so every chunk worker thread is used, then checks them
      * nearest first.
      */
-    private void tryBatch(World world, List<int[]> candidates, int from, long started, CompletableFuture<Location> result) {
+    private void tryBatch(World world, List<int[]> candidates, int from, long started, CompletableFuture<Location> result,
+            BooleanSupplier cancelled) {
+        if (abandoned(world, result, cancelled)) {
+            return;
+        }
         int to = Math.min(Math.min(candidates.size(), MAX_ATTEMPTS), from + BATCH_SIZE);
         if (from >= to) {
             // Nothing dry nearby (e.g. deep ocean): stand on whatever is at the origin.
-            onMain(() -> finish(world, surface(world, 8, 8), from, started, result));
+            onMain(result, () -> finish(world, surface(world, 8, 8), from, started, result));
             return;
         }
         List<CompletableFuture<?>> loads = new ArrayList<>();
-        for (int i = from; i < to; i++) {
-            int[] chunk = candidates.get(i);
-            loads.add(world.getChunkAtAsync(chunk[0], chunk[1], true));
+        try {
+            for (int i = from; i < to; i++) {
+                int[] chunk = candidates.get(i);
+                loads.add(world.getChunkAtAsync(chunk[0], chunk[1], true));
+            }
+        } catch (RuntimeException e) {
+            result.completeExceptionally(e);
+            return;
         }
-        CompletableFuture.allOf(loads.toArray(CompletableFuture[]::new)).whenComplete((ignored, error) -> onMain(() -> {
+        CompletableFuture.allOf(loads.toArray(CompletableFuture[]::new)).whenComplete((ignored, error) -> onMain(result, () -> {
+            if (abandoned(world, result, cancelled)) {
+                return;
+            }
             for (int i = from; i < to; i++) {
                 int[] chunk = candidates.get(i);
                 if (!world.isChunkLoaded(chunk[0], chunk[1])) {
@@ -89,8 +111,20 @@ final class SpawnFinder {
                     return;
                 }
             }
-            tryBatch(world, candidates, to, started, result);
+            tryBatch(world, candidates, to, started, result, cancelled);
         }));
+    }
+
+    /** Stops the search (and fails the result) once nobody wants it or its world is gone. */
+    private static boolean abandoned(World world, CompletableFuture<Location> result, BooleanSupplier cancelled) {
+        if (result.isDone()) {
+            return true;
+        }
+        if (cancelled.getAsBoolean() || Bukkit.getWorld(world.getUID()) == null) {
+            result.completeExceptionally(new CancellationException("The spawn search for " + world.getName() + " was cancelled"));
+            return true;
+        }
+        return false;
     }
 
     private void finish(World world, Location spot, int checked, long started, CompletableFuture<Location> result) {
@@ -175,11 +209,25 @@ final class SpawnFinder {
         }
     }
 
-    private void onMain(Runnable task) {
+    /** Runs the task on the main thread; if it throws, or cannot run, the search fails instead of hanging. */
+    private void onMain(CompletableFuture<?> result, Runnable task) {
+        Runnable guarded = () -> {
+            try {
+                task.run();
+            } catch (RuntimeException e) {
+                result.completeExceptionally(e);
+            }
+        };
         if (Bukkit.isPrimaryThread()) {
-            task.run();
+            guarded.run();
         } else if (plugin.isEnabled()) {
-            Bukkit.getScheduler().runTask(plugin, task);
+            try {
+                Bukkit.getScheduler().runTask(plugin, guarded);
+            } catch (RuntimeException e) {
+                result.completeExceptionally(e);
+            }
+        } else {
+            result.completeExceptionally(new IllegalStateException("The plugin was disabled during the spawn search"));
         }
     }
 }

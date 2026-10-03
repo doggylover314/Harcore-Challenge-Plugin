@@ -1,5 +1,6 @@
 package io.github.doggylover314.hardcorechallenge.ui;
 
+import io.github.doggylover314.hardcorechallenge.HardcoreChallengePlugin;
 import io.github.doggylover314.hardcorechallenge.config.Messages;
 import io.github.doggylover314.hardcorechallenge.core.Boss;
 import io.github.doggylover314.hardcorechallenge.core.BossKill;
@@ -8,6 +9,7 @@ import io.github.doggylover314.hardcorechallenge.core.Outcome;
 import io.github.doggylover314.hardcorechallenge.core.PlayerStats;
 import io.github.doggylover314.hardcorechallenge.core.RunLog;
 import io.github.doggylover314.hardcorechallenge.core.RunQuery;
+import io.github.doggylover314.hardcorechallenge.core.RunRecap;
 import io.github.doggylover314.hardcorechallenge.core.TimeFormat;
 import io.github.doggylover314.hardcorechallenge.core.TimelineEvent;
 import java.time.Instant;
@@ -20,6 +22,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import net.kyori.adventure.audience.Audience;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.JoinConfiguration;
 import net.kyori.adventure.text.event.ClickEvent;
@@ -116,6 +119,7 @@ public final class RunReports {
             sender.sendMessage(m.plain("run-death",
                     Placeholder.unparsed("player", death.playerName()),
                     Placeholder.unparsed("cause", death.cause()),
+                    Placeholder.component("death_message", deathText(m, death)),
                     Placeholder.unparsed("killer", death.killer() == null ? "" : " (" + death.killer() + ")"),
                     Placeholder.unparsed("x", String.valueOf(death.x())),
                     Placeholder.unparsed("y", String.valueOf(death.y())),
@@ -143,12 +147,53 @@ public final class RunReports {
             }
         }
 
-        Component buttons = Component.join(JoinConfiguration.separator(Component.space()),
-                m.plain("run-button-timeline").clickEvent(ClickEvent.runCommand("/hcc run " + number + " timeline")),
-                m.plain("run-button-replay").clickEvent(ClickEvent.suggestCommand("/hcc start replay " + number)),
-                m.plain("run-button-delete").clickEvent(ClickEvent.runCommand("/hcc run " + number + " delete")),
-                m.plain("run-button-back").clickEvent(ClickEvent.runCommand("/hcc runs")));
-        sender.sendMessage(buttons);
+        // Replaying a seed and deleting are admin commands; players only get the read-only buttons.
+        List<Component> buttons = new ArrayList<>();
+        buttons.add(m.plain("run-button-timeline").clickEvent(ClickEvent.runCommand("/hcc run " + number + " timeline")));
+        if (sender.hasPermission(HardcoreChallengePlugin.PERMISSION_ADMIN)) {
+            buttons.add(m.plain("run-button-replay").clickEvent(ClickEvent.suggestCommand("/hcc start replay " + number)));
+            buttons.add(m.plain("run-button-delete").clickEvent(ClickEvent.runCommand("/hcc run " + number + " delete")));
+        }
+        buttons.add(m.plain("run-button-back").clickEvent(ClickEvent.runCommand("/hcc runs")));
+        sender.sendMessage(Component.join(JoinConfiguration.separator(Component.space()), buttons));
+    }
+
+    // --------------------------------------------------------------------- recap
+
+    /** The short summary shown when a run ends. Any message left blank in config.yml is skipped. */
+    public void sendRecap(Audience audience, int runNumber, RunRecap recap) {
+        Messages m = messages.get();
+        if (m.isBlank("recap-header")) {
+            return;
+        }
+        audience.sendMessage(m.chat("recap-header",
+                Placeholder.unparsed("run", String.valueOf(runNumber)),
+                Placeholder.unparsed("time", TimeFormat.clock(recap.durationMillis()))));
+
+        if (!m.isBlank("recap-bosses")) {
+            List<String> names = recap.bosses().stream().map(Boss::displayName).toList();
+            audience.sendMessage(m.plain("recap-bosses",
+                    Placeholder.unparsed("count", String.valueOf(recap.bosses().size())),
+                    Placeholder.unparsed("total", String.valueOf(recap.totalBosses())),
+                    Placeholder.unparsed("bosses", names.isEmpty() ? m.raw("none") : String.join(", ", names))));
+        }
+        if (!m.isBlank("recap-dimension")) {
+            String key = "recap-dimension-" + recap.furthest().name().toLowerCase(Locale.ROOT);
+            audience.sendMessage(m.plain("recap-dimension", Placeholder.component("dimension", m.plain(key))));
+        }
+        if (recap.topDamagePlayer() != null && !m.isBlank("recap-top-damage")) {
+            audience.sendMessage(m.plain("recap-top-damage",
+                    Placeholder.unparsed("player", recap.topDamagePlayer()),
+                    Placeholder.unparsed("share", String.format(Locale.ROOT, "%.0f%%", recap.topDamageShare() * 100))));
+        }
+        DeathRecord death = recap.death();
+        if (death != null && !m.isBlank("recap-death")) {
+            audience.sendMessage(m.plain("recap-death",
+                    Placeholder.unparsed("player", death.playerName()),
+                    Placeholder.unparsed("cause", death.cause()),
+                    Placeholder.component("death_message", deathText(m, death)),
+                    Placeholder.unparsed("killer", death.killer() == null ? "" : " (" + death.killer() + ")")));
+        }
     }
 
     // ------------------------------------------------------------------ timeline
@@ -163,18 +208,29 @@ public final class RunReports {
         for (TimelineEvent event : shown.items()) {
             sender.sendMessage(m.plain("timeline-line",
                     Placeholder.unparsed("time", TimeFormat.clock(event.elapsedMillis())),
-                    Placeholder.component("event", describe(event))));
+                    Placeholder.component("event", describe(event, run.death()))));
         }
         sender.sendMessage(navigation(shown.page(), shown.pages(), "/hcc run " + run.runNumber() + " timeline"));
     }
 
     /** One timeline entry as text, e.g. "Steve entered the Nether first". */
-    public Component describe(TimelineEvent event) {
+    public Component describe(TimelineEvent event, DeathRecord death) {
         Messages m = messages.get();
         String key = "event-" + event.type().name().toLowerCase(Locale.ROOT).replace('_', '-');
         return m.plain(key,
                 Placeholder.unparsed("player", event.player() == null ? "?" : event.player()),
-                Placeholder.unparsed("detail", detailName(event.detail())));
+                Placeholder.unparsed("detail", detailName(event.detail())),
+                Placeholder.component("death_message", death != null ? deathText(m, death) : Component.text(detailName(event.detail()))));
+    }
+
+    /** The stored vanilla death message, or the damage cause (message {@code death-no-message}) if there is none. */
+    public static Component deathText(Messages m, DeathRecord death) {
+        if (death.message() != null && !death.message().isBlank()) {
+            return Component.text(death.message());
+        }
+        return m.plain("death-no-message",
+                Placeholder.unparsed("player", death.playerName()),
+                Placeholder.unparsed("cause", death.cause()));
     }
 
     /** Friendly name for a timeline detail key (boss, dimension, item, structure, outcome). */

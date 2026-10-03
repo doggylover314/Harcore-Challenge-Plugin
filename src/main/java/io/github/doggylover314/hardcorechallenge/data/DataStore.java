@@ -5,6 +5,7 @@ import io.github.doggylover314.hardcorechallenge.core.BossKill;
 import io.github.doggylover314.hardcorechallenge.core.Roster;
 import io.github.doggylover314.hardcorechallenge.core.RunPhase;
 import io.github.doggylover314.hardcorechallenge.core.RunSnapshot;
+import io.github.doggylover314.hardcorechallenge.core.SeedChoice;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -58,15 +59,29 @@ public final class DataStore {
 
     // ------------------------------------------------------------------ state
 
-    /** Everything needed to resume after a restart. */
-    public record PersistedState(RunSnapshot run, List<String> worldPaths, Roster roster) {
+    /**
+     * Everything needed to resume after a restart.
+     *
+     * @param pendingSeed the replay / custom seed requested for the run being created while
+     *                    RESETTING, or null (random seed or not resetting)
+     * @param unreadable  state.yml exists but could not be parsed; everything else is then an empty
+     *                    initial state that must not be acted on or saved over the file
+     */
+    public record PersistedState(RunSnapshot run, List<String> worldPaths, Roster roster, SeedChoice pendingSeed, boolean unreadable) {
+        public PersistedState(RunSnapshot run, List<String> worldPaths, Roster roster, SeedChoice pendingSeed) {
+            this(run, worldPaths, roster, pendingSeed, false);
+        }
+
+        public PersistedState(RunSnapshot run, List<String> worldPaths, Roster roster) {
+            this(run, worldPaths, roster, null, false);
+        }
     }
 
     public PersistedState loadState() {
         Roster roster = new Roster();
         YamlConfiguration yaml = read(stateFile);
         if (yaml == null) {
-            return new PersistedState(RunSnapshot.initial(), List.of(), roster);
+            return new PersistedState(RunSnapshot.initial(), List.of(), roster, null, Files.isRegularFile(stateFile));
         }
 
         RunPhase phase;
@@ -100,7 +115,28 @@ public final class DataStore {
                 parseUuid(key).ifPresent(id -> roster.markSynced(id, synced.getInt(key)));
             }
         }
-        return new PersistedState(run, yaml.getStringList("world-paths"), roster);
+        if (yaml.contains("in-run")) {
+            for (String raw : yaml.getStringList("in-run")) {
+                parseUuid(raw).ifPresent(roster::joinRun);
+            }
+        } else {
+            // state.yml from before the in-run list existed: whoever was synced to this run is in it.
+            roster.syncedRuns().forEach((id, syncedRun) -> {
+                if (syncedRun == run.runNumber()) {
+                    roster.joinRun(id);
+                }
+            });
+        }
+        return new PersistedState(run, yaml.getStringList("world-paths"), roster, readPendingSeed(yaml));
+    }
+
+    private static SeedChoice readPendingSeed(YamlConfiguration yaml) {
+        ConfigurationSection section = yaml.getConfigurationSection("pending-seed");
+        if (section == null || !section.contains("seed")) {
+            return null;
+        }
+        Integer replayOf = section.contains("replay-of") ? section.getInt("replay-of") : null;
+        return new SeedChoice(section.getLong("seed"), replayOf, section.getBoolean("custom"));
     }
 
     public void saveState(PersistedState state) {
@@ -122,12 +158,23 @@ public final class DataStore {
         yaml.set("elapsed-millis", run.elapsedMillis());
         yaml.set("boss-kills", writeKills(run.bossKills()));
         yaml.set("world-paths", state.worldPaths());
+        SeedChoice pending = state.pendingSeed();
+        if (pending != null && pending.seed() != null) {
+            Map<String, Object> seed = new LinkedHashMap<>();
+            seed.put("seed", pending.seed());
+            if (pending.replayOf() != null) {
+                seed.put("replay-of", pending.replayOf());
+            }
+            seed.put("custom", pending.custom());
+            yaml.createSection("pending-seed", seed);
+        }
 
         Roster roster = state.roster();
         Map<String, Object> participants = new LinkedHashMap<>();
         roster.participants().forEach((id, name) -> participants.put(id.toString(), name));
         yaml.createSection("participants", participants);
         yaml.set("eliminated", roster.eliminated().stream().map(UUID::toString).toList());
+        yaml.set("in-run", roster.inRun().stream().map(UUID::toString).toList());
         Map<String, Object> synced = new LinkedHashMap<>();
         roster.syncedRuns().forEach((id, runNumber) -> synced.put(id.toString(), runNumber));
         yaml.createSection("synced-run", synced);
@@ -232,9 +279,11 @@ public final class DataStore {
     }
 
     public void writeNow(Path file, String content) {
+        Path temp = null;
         try {
             Files.createDirectories(file.getParent());
-            Path temp = file.resolveSibling(file.getFileName() + ".tmp");
+            // A unique temp file, so the IO thread and a shutdown write to the same path can't collide.
+            temp = Files.createTempFile(file.getParent(), file.getFileName() + ".", ".tmp");
             Files.writeString(temp, content, StandardCharsets.UTF_8);
             try {
                 Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
@@ -243,6 +292,13 @@ public final class DataStore {
             }
         } catch (IOException e) {
             logger.log(Level.SEVERE, "Could not write " + file, e);
+            if (temp != null) {
+                try {
+                    Files.deleteIfExists(temp);
+                } catch (IOException ignored) {
+                    // Best effort only.
+                }
+            }
         }
     }
 

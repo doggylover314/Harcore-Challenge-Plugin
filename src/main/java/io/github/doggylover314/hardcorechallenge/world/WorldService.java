@@ -1,6 +1,7 @@
 package io.github.doggylover314.hardcorechallenge.world;
 
 import io.github.doggylover314.hardcorechallenge.core.DeletionGuard;
+import io.github.doggylover314.hardcorechallenge.core.RunNumbers;
 import io.github.doggylover314.hardcorechallenge.core.WorldNames;
 import io.github.doggylover314.hardcorechallenge.data.DataStore;
 import java.io.IOException;
@@ -16,8 +17,12 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -56,6 +61,8 @@ public final class WorldService {
     private final ExecutorService cleanup;
     private final Supplier<Collection<String>> currentRunPaths;
     private final SpawnFinder spawnFinder;
+    /** Run numbers whose worlds are being created right now (main thread only). */
+    private final Set<Integer> creating = new HashSet<>();
 
     /**
      * @param currentRunPaths folders of the current (or kept) run; these are never deleted, loaded or not
@@ -79,6 +86,9 @@ public final class WorldService {
     /**
      * Creates (or loads, if the folders already exist) the three worlds of a run, one per tick.
      * Must be called on the main thread; the future completes on the main thread.
+     *
+     * <p>Cancel the future to abort: the remaining steps are skipped. If the future fails or is
+     * cancelled, whatever was already created is retired, so nothing leaks.</p>
      */
     public CompletableFuture<RunWorlds> create(int runNumber, long seed) {
         CompletableFuture<RunWorlds> future = new CompletableFuture<>();
@@ -86,6 +96,14 @@ public final class WorldService {
         World.Environment[] environments = {World.Environment.NORMAL, World.Environment.NETHER, World.Environment.THE_END};
         List<String> names = WorldNames.all(runNumber);
         CompletableFuture<Location> overworldSpawn = new CompletableFuture<>();
+
+        creating.add(runNumber);
+        future.whenComplete((worlds, error) -> {
+            creating.remove(runNumber);
+            if (error != null) {
+                discardPartial(runNumber);
+            }
+        });
 
         for (int i = 0; i < 3; i++) {
             final int index = i;
@@ -98,9 +116,9 @@ public final class WorldService {
                     created[index] = world;
                     if (index == 0) {
                         // Look for ground while the other two dimensions are being created.
-                        spawnFinder.find(world).whenComplete((spawn, error) -> {
+                        spawnFinder.find(world, future::isDone).whenComplete((spawn, error) -> {
                             if (error != null) {
-                                overworldSpawn.completeExceptionally(error);
+                                future.completeExceptionally(error);
                             } else {
                                 overworldSpawn.complete(spawn);
                             }
@@ -108,12 +126,15 @@ public final class WorldService {
                     }
                     if (index == 2) {
                         overworldSpawn.whenComplete((spawn, error) -> {
-                            if (error != null) {
-                                future.completeExceptionally(error);
-                                return;
+                            try {
+                                if (future.isDone()) {
+                                    return;
+                                }
+                                created[0].setSpawnLocation(spawn);
+                                future.complete(new RunWorlds(created[0], created[1], created[2]));
+                            } catch (RuntimeException e) {
+                                future.completeExceptionally(e);
                             }
-                            created[0].setSpawnLocation(spawn);
-                            future.complete(new RunWorlds(created[0], created[1], created[2]));
                         });
                     }
                 } catch (RuntimeException e) {
@@ -122,6 +143,15 @@ public final class WorldService {
             }, 1L + i);
         }
         return future;
+    }
+
+    /** Retires whatever worlds of a failed or cancelled creation are loaded (found by name). */
+    private void discardPartial(int runNumber) {
+        try {
+            retire(runNumber, List.of(), null, 0);
+        } catch (RuntimeException e) {
+            logger.log(Level.SEVERE, "Could not clean up the partly created worlds of run #" + runNumber, e);
+        }
     }
 
     /**
@@ -232,7 +262,14 @@ public final class WorldService {
                 paths.remove(path);
             }
         }
-        deletable.addAll(paths);
+        List<Path> allowedRoots = allowedRoots();
+        for (String path : paths) {
+            if (DeletionGuard.isInside(Paths.get(path), allowedRoots)) {
+                deletable.add(path);
+            } else {
+                logger.warning("Not deleting " + path + ": outside this server's world container");
+            }
+        }
         if (deletable.isEmpty()) {
             return;
         }
@@ -241,27 +278,35 @@ public final class WorldService {
         store.addPendingDeletions(deletable);
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             List<Path> protectedRoots = protectedRoots();
-            cleanup.execute(() -> disposeFolders(runNumber, deletable, protectedRoots, keepOld));
+            cleanup.execute(() -> disposeFolders(runNumber, deletable, protectedRoots, allowedRoots, keepOld));
         }, DELETE_DELAY_TICKS);
     }
 
     /**
      * Retries deletions that failed earlier. Call once on startup, after the current run's worlds
      * are loaded, so those are protected.
+     *
+     * @param keepOld how many archived runs to keep; above 0 the folders are archived instead of deleted
      */
-    public void processPendingDeletions() {
+    public void processPendingDeletions(int keepOld) {
         List<String> pending = new ArrayList<>(store.pendingDeletions());
         if (pending.isEmpty()) {
             return;
         }
         // Loaded worlds and the current run are protected by the guard; such entries stay queued.
         List<Path> protectedRoots = protectedRoots();
+        List<Path> allowedRoots = allowedRoots();
         logger.info("Retrying deletion of " + pending.size() + " old world folder(s)");
         cleanup.execute(() -> {
             List<String> done = new ArrayList<>();
             for (String raw : pending) {
                 Path path = Paths.get(raw);
-                Optional<String> refusal = DeletionGuard.refusal(path, protectedRoots);
+                if (!DeletionGuard.isInside(path, allowedRoots)) {
+                    logger.warning("Not deleting " + raw + ": outside this server's world container. Removed from the queue.");
+                    done.add(raw);
+                    continue;
+                }
+                Optional<String> refusal = DeletionGuard.refusal(path, protectedRoots, allowedRoots);
                 if (refusal.isPresent()) {
                     if (WorldNames.isRunWorld(String.valueOf(path.getFileName()))) {
                         logger.info("Keeping " + raw + " queued for later: " + refusal.get());
@@ -271,19 +316,28 @@ public final class WorldService {
                     }
                     continue;
                 }
-                if (deleteWithRetries(path)) {
+                OptionalInt runNumber = WorldNames.runNumberOf(String.valueOf(path.getFileName()));
+                boolean archiveIt = keepOld > 0 && runNumber.isPresent() && Files.exists(path);
+                if (archiveIt ? archive(runNumber.getAsInt(), path) : deleteWithRetries(path)) {
                     done.add(raw);
                 }
             }
             store.removePendingDeletions(done);
+            if (keepOld > 0) {
+                pruneArchive(keepOld);
+            }
         });
     }
 
     /**
-     * Whether a run number must not be used for a new run: one of its worlds is still loaded, or
-     * its folders are queued for deletion (a deletion could otherwise remove the new world).
+     * Whether a run number must not be used for a new run: its worlds are being created or loaded,
+     * its folders are queued for deletion (a deletion could otherwise remove the new world), or
+     * folders with its name exist on disk.
      */
     public boolean isRunNumberTaken(int runNumber) {
+        if (creating.contains(runNumber)) {
+            return true;
+        }
         List<String> names = WorldNames.all(runNumber);
         for (String name : names) {
             if (Bukkit.getWorld(name) != null) {
@@ -296,7 +350,78 @@ public final class WorldService {
                 return true;
             }
         }
+        for (Path folder : runFoldersOnDisk()) {
+            if (names.contains(String.valueOf(folder.getFileName()))) {
+                return true;
+            }
+        }
         return false;
+    }
+
+    /** The highest run number among the run world folders on disk (0 if none). */
+    public int highestRunNumberOnDisk() {
+        return RunNumbers.highest(runFoldersOnDisk().stream().map(path -> String.valueOf(path.getFileName())).toList());
+    }
+
+    /**
+     * Run world folders on disk: Paper keeps plugin worlds in {@code <main world>/dimensions/minecraft},
+     * older layouts kept them in the world container itself.
+     */
+    private Set<Path> runFoldersOnDisk() {
+        Set<Path> folders = new LinkedHashSet<>();
+        folders.addAll(RunNumbers.runFolders(Bukkit.getWorldContainer().toPath()));
+        folders.addAll(RunNumbers.runFolders(mainWorld().getWorldPath().resolve("dimensions").resolve("minecraft")));
+        for (World world : Bukkit.getWorlds()) {
+            if (WorldNames.isRunWorld(world.getName()) && world.getWorldPath().getParent() != null) {
+                folders.addAll(RunNumbers.runFolders(world.getWorldPath().getParent()));
+            }
+        }
+        return folders;
+    }
+
+    /** Queues folders for deletion, skipping anything outside this server or not a run world. */
+    public void queueDeletion(Collection<String> paths) {
+        List<Path> allowedRoots = allowedRoots();
+        List<String> accepted = new ArrayList<>();
+        for (String raw : paths) {
+            Path path = Paths.get(raw);
+            Path fileName = path.getFileName();
+            if (fileName != null && WorldNames.isRunWorld(fileName.toString()) && DeletionGuard.isInside(path, allowedRoots)) {
+                accepted.add(raw);
+            }
+        }
+        store.addPendingDeletions(accepted);
+    }
+
+    /**
+     * Queues run world folders left on disk by earlier runs (or a crash mid-reset) for deletion.
+     * Call on startup after the current run's worlds are loaded. Loaded worlds, the current run
+     * and the run numbered {@code keepRun} are never queued.
+     */
+    public void sweepLeftovers(int keepRun) {
+        List<Path> protectedRoots = protectedRoots();
+        List<Path> allowedRoots = allowedRoots();
+        Set<String> queued = store.pendingDeletions();
+        List<String> found = new ArrayList<>();
+        for (Path folder : runFoldersOnDisk()) {
+            String raw = folder.toAbsolutePath().normalize().toString();
+            if (queued.contains(raw) || WorldNames.runNumberOf(String.valueOf(folder.getFileName())).orElse(-1) == keepRun) {
+                continue;
+            }
+            if (DeletionGuard.refusal(folder, protectedRoots, allowedRoots).isEmpty()) {
+                found.add(raw);
+            }
+        }
+        if (found.isEmpty()) {
+            return;
+        }
+        store.addPendingDeletions(found);
+        logger.info("Found " + found.size() + " leftover run world folder(s) on disk; queued for deletion: " + String.join(", ", found));
+    }
+
+    /** Folders that deletions are confined to: this server's world container. */
+    private static List<Path> allowedRoots() {
+        return List.of(Bukkit.getWorldContainer().toPath());
     }
 
     /**
@@ -323,10 +448,10 @@ public final class WorldService {
 
     // ------------------------------------------------------- cleanup thread
 
-    private void disposeFolders(int runNumber, List<String> rawPaths, List<Path> protectedRoots, int keepOld) {
+    private void disposeFolders(int runNumber, List<String> rawPaths, List<Path> protectedRoots, List<Path> allowedRoots, int keepOld) {
         List<String> eligible = new ArrayList<>();
         for (String raw : rawPaths) {
-            Optional<String> refusal = DeletionGuard.refusal(Paths.get(raw), protectedRoots);
+            Optional<String> refusal = DeletionGuard.refusal(Paths.get(raw), protectedRoots, allowedRoots);
             if (refusal.isPresent()) {
                 logger.warning("Not deleting " + raw + ": " + refusal.get());
             } else {

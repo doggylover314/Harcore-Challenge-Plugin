@@ -6,6 +6,8 @@ Kill the Ender Dragon, Wither, Elder Guardian and Warden in one run to win.
 ## Features
 
 - Instant in-process reset to a new random seed, no server restart
+- Runs start in the morning with clear weather
+- Run ends on the first death, or when a share of players is dead (`reset-when`)
 - Old run worlds are unloaded and deleted (or archived)
 - Boss checklist on the sidebar and boss bar
 - Victory sequence with fireworks
@@ -37,38 +39,43 @@ The jar ends up in `build/libs/`. Gradle downloads JDK 25 if you don't have it.
 - Everyone online when you run `/hcc start` is in the challenge.
 - Anyone who joins while a challenge is going is added and dropped into the current run.
 - Players without the `hardcorechallenge.play` permission only spectate.
+- Spectator-only account: negate `hardcorechallenge.play` for it with a permissions plugin
+  such as LuckPerms. It can still use `/hcc status` and the run browsing commands.
 
 ## Commands
 
-| Command | Description |
-| --- | --- |
-| `/hcc start` | Start a new run |
-| `/hcc start replay <run>` | Start a new run on a past run's seed |
-| `/hcc start seed <seed>` | Start a new run on a specific seed |
-| `/hcc reset [reason]` | End the current run and start a new one |
-| `/hcc stop` | End the run, everyone spectates |
-| `/hcc status` | Current run, time, bosses, players |
-| `/hcc runs [page]` | All runs, newest first |
-| `/hcc runs wins\|deaths\|resets\|stopped` | Filter by outcome |
-| `/hcc runs player <name>` | Runs a player was in |
-| `/hcc run <number>` | Details for one run |
-| `/hcc run <number> timeline` | What happened, in order |
-| `/hcc run <number> delete` | Remove a run from the list |
-| `/hcc reload` | Reload the config |
+| Command | Who | Description |
+| --- | --- | --- |
+| `/hcc` | everyone | Help |
+| `/hcc start` | admin | Start a new run |
+| `/hcc start replay <run>` | admin | Start a new run on a past run's seed |
+| `/hcc start seed <seed>` | admin | Start a new run on a specific seed |
+| `/hcc reset [reason]` | admin | End the current run and start a new one |
+| `/hcc stop` | admin | End the run, everyone spectates |
+| `/hcc status` | everyone | Current run, time, bosses, players |
+| `/hcc runs [page]` | everyone | All runs, newest first |
+| `/hcc runs <wins\|deaths\|resets\|stopped> [page]` | everyone | Filter by outcome |
+| `/hcc runs player <name> [page]` | everyone | Runs a player was in |
+| `/hcc run <number>` | everyone | Details for one run |
+| `/hcc run <number> timeline [page]` | everyone | What happened, in order |
+| `/hcc run <number> delete` | admin | Remove a run from the list (asks to confirm) |
+| `/hcc resetwhen <first-death\|N%>` | admin | Change when deaths end the run |
+| `/hcc revive <player>` | admin | Bring back a player who is out |
+| `/hcc reload` | admin | Reload the config |
 
 `/hcc history` works as an alias for `/hcc runs`. Lines in the runs list are clickable.
 
 ## Permissions
 
 - `hardcorechallenge.admin` (op): everything
-- `hardcorechallenge.play` (everyone): be in the challenge and use `/hcc status`
+- `hardcorechallenge.play` (everyone): be in the challenge; `/hcc status` and run browsing need no permission
 
 ## What gets saved per run
 
 - Seed, outcome, duration, start date
 - Participants
 - Bosses in the order they died, plus who landed the final hit
-- The death that ended it (who, what killed them, where)
+- The death that ended it (who, the death message, where)
 - Per player: boss damage share, boss kills, mobs killed, damage dealt, distance, time played
 - Timeline: joins and leaves, first into the Nether and End, first iron, diamonds, blaze rod
   and eye of ender, first stronghold, monument and ancient city, boss fights starting, boss kills, death
@@ -79,13 +86,15 @@ Runs are stored in `plugins/HardcoreChallenge/runs/`, one file per run.
 
 See `config.yml`. All of it can be reloaded with `/hcc reload`. Main options:
 
-- `auto-reset-on-death`: reset when someone dies, or just take them out of the run
+- `reset-when`: `first-death`, or a percentage like `50%`. A dead player is out and spectates; the
+  run ends when that share of everyone who has been in the run is dead (rounded up, at least one)
 - `reset-countdown-seconds`: countdown before the new world
-- `reset-on-death-of`: `participants` or `anyone`
+- `spawn-protection-seconds`: no damage for this long after entering a run (0 = off)
+- `announce`: chat, title, bossbar and sound toggles
+- `sounds`: sound for each event
 - `keep-old-worlds`: how many old run folders to archive (0 deletes them)
 - `bosses`: which bosses count
-- `victory`: what happens when the run is won
-- `webhook-url`: optional POST on run start and end (Discord webhooks work)
+- `victory`: whether bosses win the run, and what happens after
 - `messages`: every message, in MiniMessage format
 
 ## Notes

@@ -52,6 +52,35 @@ public final class PlayerResetter {
         revokeAdvancements(player);
     }
 
+    /** Empties the inventory, cursor and experience (not the ender chest). Used when a player is out of the run. */
+    public static void clearItems(Player player) {
+        player.closeInventory();
+        PlayerInventory inventory = player.getInventory();
+        inventory.clear();
+        inventory.setArmorContents(new ItemStack[inventory.getArmorContents().length]);
+        inventory.setItemInOffHand(null);
+        player.setItemOnCursor(null);
+        player.setLevel(0);
+        player.setExp(0f);
+        player.setTotalExperience(0);
+    }
+
+    /** Full health and food, no effects or fire, and survival mode. Keeps the inventory. */
+    public static void revive(Player player) {
+        player.clearActivePotionEffects();
+        player.setFireTicks(0);
+        player.setFreezeTicks(0);
+        player.setFallDistance(0f);
+        player.setRemainingAir(player.getMaximumAir());
+        player.setVelocity(new Vector());
+        AttributeInstance maxHealth = player.getAttribute(Attribute.MAX_HEALTH);
+        player.setHealth(maxHealth != null ? maxHealth.getValue() : 20.0);
+        player.setFoodLevel(20);
+        player.setSaturation(5f);
+        player.setExhaustion(0f);
+        player.setGameMode(GameMode.SURVIVAL);
+    }
+
     /** Wipes the player and puts them in survival, ready to play. */
     public static void prepareForRun(Player player) {
         wipe(player);

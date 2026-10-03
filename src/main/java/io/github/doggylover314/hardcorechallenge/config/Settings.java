@@ -1,6 +1,7 @@
 package io.github.doggylover314.hardcorechallenge.config;
 
 import io.github.doggylover314.hardcorechallenge.core.Boss;
+import io.github.doggylover314.hardcorechallenge.core.ResetRule;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -12,16 +13,15 @@ import org.bukkit.configuration.file.FileConfiguration;
  * Immutable snapshot of config.yml. A new one is built on every reload.
  */
 public record Settings(
-        boolean autoResetOnDeath,
+        ResetRule resetWhen,
         int resetCountdownSeconds,
-        ResetOnDeathOf resetOnDeathOf,
+        int spawnProtectionSeconds,
         int keepOldWorlds,
         List<Boss> bosses,
         boolean announceChat,
         boolean announceTitle,
         boolean announceBossbar,
         boolean announceSound,
-        String webhookUrl,
         boolean victoryEnabled,
         boolean victoryRequireAllBosses,
         VictoryAction victoryAction,
@@ -29,8 +29,6 @@ public record Settings(
         boolean victoryFireworks,
         ConfigurationSection sounds
 ) {
-    public enum ResetOnDeathOf { PARTICIPANTS, ANYONE }
-
     public enum VictoryAction { STOP, RESET }
 
     public static Settings load(FileConfiguration config, Logger logger) {
@@ -49,16 +47,15 @@ public record Settings(
         }
 
         return new Settings(
-                config.getBoolean("auto-reset-on-death", true),
+                parseResetWhen(config.getString("reset-when"), logger),
                 Math.max(0, config.getInt("reset-countdown-seconds", 10)),
-                parseEnum(ResetOnDeathOf.class, config.getString("reset-on-death-of"), ResetOnDeathOf.PARTICIPANTS, "reset-on-death-of", logger),
+                Math.max(0, config.getInt("spawn-protection-seconds", 60)),
                 Math.max(0, config.getInt("keep-old-worlds", 0)),
                 List.copyOf(bosses),
                 config.getBoolean("announce.chat", true),
                 config.getBoolean("announce.title", true),
                 config.getBoolean("announce.bossbar", true),
                 config.getBoolean("announce.sound", true),
-                config.getString("webhook-url", "").trim(),
                 config.getBoolean("victory.enabled", true),
                 config.getBoolean("victory.require-all-bosses", true),
                 parseEnum(VictoryAction.class, config.getString("victory.action"), VictoryAction.STOP, "victory.action", logger),
@@ -70,6 +67,16 @@ public record Settings(
 
     public String sound(String key) {
         return sounds == null ? null : sounds.getString(key);
+    }
+
+    static ResetRule parseResetWhen(String raw, Logger logger) {
+        if (raw == null || raw.isBlank()) {
+            return ResetRule.DEFAULT;
+        }
+        return ResetRule.parse(raw).orElseGet(() -> {
+            logger.warning("Invalid value '" + raw + "' for reset-when; expected first-death or a percentage from 1% to 100%. Using first-death");
+            return ResetRule.DEFAULT;
+        });
     }
 
     private static <E extends Enum<E>> E parseEnum(Class<E> type, String raw, E fallback, String path, Logger logger) {

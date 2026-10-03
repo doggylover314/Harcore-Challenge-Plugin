@@ -18,11 +18,13 @@ import org.bukkit.GameMode;
 import org.bukkit.Material;
 import org.bukkit.Statistic;
 import org.bukkit.World;
+import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.ComplexEntityPart;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Projectile;
+import org.bukkit.entity.Tameable;
 import org.bukkit.entity.TNTPrimed;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -92,17 +94,21 @@ public final class RunTracker implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDamage(EntityDamageByEntityEvent event) {
         RunLog live = live();
-        Player attacker = attacker(event.getDamager());
+        Player attacker = attacker(event);
         if (live == null || !tracked(attacker)) {
             return;
         }
         Entity victim = event.getEntity() instanceof ComplexEntityPart part ? part.getParent() : event.getEntity();
-        if (victim instanceof Player || !(victim instanceof LivingEntity living)) {
+        if (victim instanceof Player || victim instanceof ArmorStand || !(victim instanceof LivingEntity living)) {
             return;
         }
         // Count only damage that actually landed, not overkill.
         double dealt = Math.min(event.getFinalDamage(), living.getHealth() + living.getAbsorptionAmount());
+        // Only bosses this run is scored against count as boss damage.
         Boss boss = BossListener.fromType(victim.getType());
+        if (boss != null && !manager.machine().trackedBosses().contains(boss)) {
+            boss = null;
+        }
         live.stats(attacker.getUniqueId(), attacker.getName()).addDamage(dealt, boss != null);
         if (boss != null && live.first("fight:" + boss.id())) {
             manager.logEvent(TimelineEvent.Type.BOSS_FIGHT_STARTED, attacker.getName(), boss.id());
@@ -160,7 +166,14 @@ public final class RunTracker implements Listener {
 
     /** Called once a second: distance, play time and structure discovery. */
     public void sample() {
-        RunLog live = live();
+        sample(live());
+    }
+
+    /**
+     * Samples into a specific log, which may no longer be the live one. Used when a run ends, after
+     * the phase has already changed.
+     */
+    public void sample(RunLog live) {
         RunWorlds worlds = manager.currentWorlds().orElse(null);
         long now = System.currentTimeMillis();
         boolean checkStructures = (samples++ & 1) == 0;
@@ -205,15 +218,28 @@ public final class RunTracker implements Listener {
         return total;
     }
 
-    private static Player attacker(Entity damager) {
-        if (damager instanceof Player player) {
+    /**
+     * The player responsible for a hit: whoever the damage source names as the cause (covers end
+     * crystals or TNT set off by a player, area effect clouds, thrown potions), else the damager itself.
+     * Fire and burn ticks have no causing entity, so they stay uncounted.
+     */
+    private static Player attacker(EntityDamageByEntityEvent event) {
+        Player player = asPlayer(event.getDamageSource().getCausingEntity());
+        return player != null ? player : asPlayer(event.getDamager());
+    }
+
+    private static Player asPlayer(Entity entity) {
+        if (entity instanceof Player player) {
             return player;
         }
-        if (damager instanceof Projectile projectile && projectile.getShooter() instanceof Player shooter) {
+        if (entity instanceof Projectile projectile && projectile.getShooter() instanceof Player shooter) {
             return shooter;
         }
-        if (damager instanceof TNTPrimed tnt && tnt.getSource() instanceof Player source) {
+        if (entity instanceof TNTPrimed tnt && tnt.getSource() instanceof Player source) {
             return source;
+        }
+        if (entity instanceof Tameable pet && pet.getOwnerUniqueId() != null) {
+            return Bukkit.getPlayer(pet.getOwnerUniqueId());
         }
         return null;
     }

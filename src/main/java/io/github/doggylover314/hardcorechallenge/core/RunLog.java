@@ -35,6 +35,9 @@ public final class RunLog {
     private long durationMillis;
     private DeathRecord death;
     private String reason;
+    /** Run time and wall-clock time of the last save of a live log; lets a crashed run be closed with a real duration. */
+    private long checkpointMillis;
+    private long checkpointAt;
 
     /**
      * @param replayOf   run whose seed this run reuses, or {@code null}
@@ -100,6 +103,12 @@ public final class RunLog {
         this.reason = reason;
     }
 
+    /** Notes how far the run had got when the live log was last saved. */
+    public void checkpoint(long elapsedMillis, long at) {
+        this.checkpointMillis = elapsedMillis;
+        this.checkpointAt = at;
+    }
+
     /** Used when loading saved runs. */
     public void restoreBossKill(BossKill kill, String finalHit) {
         bossKills.add(kill);
@@ -141,6 +150,27 @@ public final class RunLog {
             share.put(entry.getKey(), entry.getValue().bossDamage() / total);
         }
         return share;
+    }
+
+    /**
+     * Best guess at how long a live log ran, for closing it after a crash: the latest of the last
+     * checkpoint and the last timeline event.
+     */
+    public long recoveredDurationMillis() {
+        long millis = checkpointMillis;
+        for (TimelineEvent event : timeline) {
+            millis = Math.max(millis, event.elapsedMillis());
+        }
+        return millis;
+    }
+
+    /** Best guess at when a live log stopped being written, for closing it after a crash. */
+    public long recoveredEndedAt() {
+        long at = Math.max(startedAt, checkpointAt);
+        for (TimelineEvent event : timeline) {
+            at = Math.max(at, event.at());
+        }
+        return at;
     }
 
     /** Whether the player (by name, case-insensitive) took part in this run. */
@@ -200,6 +230,14 @@ public final class RunLog {
 
     public Set<String> firsts() {
         return Collections.unmodifiableSet(firsts);
+    }
+
+    public long checkpointMillis() {
+        return checkpointMillis;
+    }
+
+    public long checkpointAt() {
+        return checkpointAt;
     }
 
     public Outcome outcome() {

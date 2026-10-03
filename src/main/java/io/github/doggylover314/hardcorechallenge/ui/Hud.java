@@ -34,7 +34,7 @@ public final class Hud {
     private Settings settings;
     private Messages messages;
 
-    private final BossBar bossBar = BossBar.bossBar(Component.empty(), 0f, BossBar.Color.RED, BossBar.Overlay.NOTCHED_10);
+    private final BossBar bossBar = BossBar.bossBar(Component.empty(), 0f, BossBar.Color.RED, BossBar.Overlay.PROGRESS);
     private Scoreboard scoreboard;
     private Objective objective;
     private boolean visible;

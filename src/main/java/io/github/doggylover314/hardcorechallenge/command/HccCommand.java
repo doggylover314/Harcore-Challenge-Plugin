@@ -31,14 +31,11 @@ public final class HccCommand {
      * @param manager supplies the manager once the plugin is enabled (commands are registered during bootstrap)
      */
     public static LiteralCommandNode<CommandSourceStack> build(Supplier<ChallengeManager> manager) {
+        // The root and the read-only subcommands have no requirement, so spectator-only accounts can use them.
         return Commands.literal("hcc")
-                .requires(source -> canPlay(source.getSender()))
                 .executes(ctx -> run(ctx, manager, (m, sender) -> {
-                    if (sender.hasPermission(HardcoreChallengePlugin.PERMISSION_ADMIN)) {
-                        sender.sendMessage(m.messages().plain("help"));
-                    } else {
-                        m.sendStatus(sender);
-                    }
+                    // Admins see every command, players only the ones they can use.
+                    sender.sendMessage(m.messages().plain(sender.hasPermission(HardcoreChallengePlugin.PERMISSION_ADMIN) ? "help" : "help-player"));
                 }))
                 .then(Commands.literal("start")
                         .requires(HccCommand::isAdmin)
@@ -66,7 +63,6 @@ public final class HccCommand {
                 .then(runsNode("runs", manager))
                 .then(runsNode("history", manager))
                 .then(Commands.literal("run")
-                        .requires(HccCommand::isAdmin)
                         .then(Commands.argument("number", IntegerArgumentType.integer(1))
                                 .suggests((ctx, builder) -> suggestRuns(builder, manager))
                                 .executes(ctx -> run(ctx, manager, (m, sender) -> m.sendRun(sender, number(ctx))))
@@ -76,9 +72,22 @@ public final class HccCommand {
                                                 .executes(ctx -> run(ctx, manager, (m, sender) ->
                                                         m.sendTimeline(sender, number(ctx), IntegerArgumentType.getInteger(ctx, "page"))))))
                                 .then(Commands.literal("delete")
+                                        .requires(HccCommand::isAdmin)
                                         .executes(ctx -> run(ctx, manager, (m, sender) -> m.requestDelete(sender, number(ctx))))
                                         .then(Commands.literal("confirm")
                                                 .executes(ctx -> run(ctx, manager, (m, sender) -> m.confirmDelete(sender, number(ctx))))))))
+                .then(Commands.literal("revive")
+                        .requires(HccCommand::isAdmin)
+                        .then(Commands.argument("player", StringArgumentType.word())
+                                .suggests((ctx, builder) -> suggestEliminated(builder, manager))
+                                .executes(ctx -> run(ctx, manager, (m, sender) ->
+                                        m.revive(sender, StringArgumentType.getString(ctx, "player"))))))
+                .then(Commands.literal("resetwhen")
+                        .requires(HccCommand::isAdmin)
+                        .then(Commands.argument("rule", StringArgumentType.greedyString())
+                                .suggests((ctx, builder) -> suggestRules(builder))
+                                .executes(ctx -> run(ctx, manager, (m, sender) ->
+                                        m.setResetWhen(sender, StringArgumentType.getString(ctx, "rule"))))))
                 .then(Commands.literal("reload")
                         .requires(HccCommand::isAdmin)
                         .executes(ctx -> run(ctx, manager, (m, sender) -> {
@@ -91,7 +100,6 @@ public final class HccCommand {
     /** /hcc runs (and its alias /hcc history): every run, filterable by outcome or player, paged. */
     private static LiteralArgumentBuilder<CommandSourceStack> runsNode(String label, Supplier<ChallengeManager> manager) {
         LiteralArgumentBuilder<CommandSourceStack> node = Commands.literal(label)
-                .requires(HccCommand::isAdmin)
                 .executes(ctx -> run(ctx, manager, (m, sender) -> m.sendRuns(sender, null, null, 1)))
                 .then(Commands.argument("page", IntegerArgumentType.integer(1))
                         .executes(ctx -> run(ctx, manager, (m, sender) -> m.sendRuns(sender, null, null, page(ctx)))));
@@ -146,13 +154,30 @@ public final class HccCommand {
         return builder.buildFuture();
     }
 
-    private static boolean isAdmin(CommandSourceStack source) {
-        return source.getSender().hasPermission(HardcoreChallengePlugin.PERMISSION_ADMIN);
+    private static CompletableFuture<Suggestions> suggestEliminated(SuggestionsBuilder builder, Supplier<ChallengeManager> supplier) {
+        ChallengeManager manager = supplier.get();
+        if (manager != null) {
+            String typed = builder.getRemainingLowerCase();
+            for (String name : manager.eliminatedNames()) {
+                if (name.toLowerCase(Locale.ROOT).startsWith(typed)) {
+                    builder.suggest(name);
+                }
+            }
+        }
+        return builder.buildFuture();
     }
 
-    private static boolean canPlay(CommandSender sender) {
-        return sender.hasPermission(HardcoreChallengePlugin.PERMISSION_PLAY)
-                || sender.hasPermission(HardcoreChallengePlugin.PERMISSION_ADMIN);
+    private static CompletableFuture<Suggestions> suggestRules(SuggestionsBuilder builder) {
+        for (String rule : new String[] {"first-death", "25%", "50%", "75%", "100%"}) {
+            if (rule.startsWith(builder.getRemainingLowerCase())) {
+                builder.suggest(rule);
+            }
+        }
+        return builder.buildFuture();
+    }
+
+    private static boolean isAdmin(CommandSourceStack source) {
+        return source.getSender().hasPermission(HardcoreChallengePlugin.PERMISSION_ADMIN);
     }
 
     private interface Action {

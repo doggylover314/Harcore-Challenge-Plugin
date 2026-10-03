@@ -39,6 +39,10 @@ public final class RunLogCodec {
         if (run.reason() != null) {
             map.put("reason", run.reason());
         }
+        if (run.isLive()) {
+            map.put("checkpoint-millis", run.checkpointMillis());
+            map.put("checkpoint-at", run.checkpointAt());
+        }
 
         Map<String, Object> participants = new LinkedHashMap<>();
         run.participants().forEach((id, name) -> participants.put(id.toString(), name));
@@ -148,6 +152,8 @@ public final class RunLogCodec {
         if (map.get("firsts") instanceof List<?> firsts) {
             firsts.forEach(first -> run.restoreFirst(String.valueOf(first)));
         }
+
+        run.checkpoint(asLong(map.get("checkpoint-millis")), asLong(map.get("checkpoint-at")));
 
         String outcome = asString(map.get("outcome"));
         if (outcome != null && !outcome.equals("live")) {

@@ -6,6 +6,7 @@ import io.github.doggylover314.hardcorechallenge.listener.BossListener;
 import io.github.doggylover314.hardcorechallenge.listener.ConnectionListener;
 import io.github.doggylover314.hardcorechallenge.listener.DeathListener;
 import io.github.doggylover314.hardcorechallenge.listener.PortalListener;
+import io.github.doggylover314.hardcorechallenge.listener.ProtectionListener;
 import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -32,6 +33,7 @@ public final class HardcoreChallengePlugin extends JavaPlugin {
         plugins.registerEvents(new BossListener(created), this);
         plugins.registerEvents(new ConnectionListener(created), this);
         plugins.registerEvents(new PortalListener(created), this);
+        plugins.registerEvents(new ProtectionListener(created), this);
         plugins.registerEvents(created.tracker(), this);
     }
 

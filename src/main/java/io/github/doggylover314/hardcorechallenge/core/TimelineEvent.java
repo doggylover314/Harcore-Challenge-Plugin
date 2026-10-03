@@ -24,6 +24,7 @@ public record TimelineEvent(long elapsedMillis, long at, Type type, String playe
         BOSS_FIGHT_STARTED,
         BOSS_KILLED,
         ELIMINATED,
+        REVIVED,
         DEATH,
         RUN_ENDED
     }

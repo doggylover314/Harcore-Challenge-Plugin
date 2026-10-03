@@ -73,6 +73,21 @@ class RunLogTest {
     }
 
     @Test
+    void crashedRunKeepsTheLatestKnownDuration() {
+        RunLog run = run();
+        assertEquals(1000L, run.recoveredEndedAt());
+        run.checkpoint(60_000L, 70_000L);
+        run.event(new TimelineEvent(65_000L, 75_000L, TimelineEvent.Type.JOINED, "Steve", null));
+        assertEquals(65_000L, run.recoveredDurationMillis());
+        assertEquals(75_000L, run.recoveredEndedAt());
+        run.event(new TimelineEvent(20_000L, 30_000L, TimelineEvent.Type.LEFT, "Steve", null));
+        assertEquals(65_000L, run.recoveredDurationMillis());
+        run.checkpoint(90_000L, 100_000L);
+        assertEquals(90_000L, run.recoveredDurationMillis());
+        assertEquals(100_000L, run.recoveredEndedAt());
+    }
+
+    @Test
     void negativeStatsAreIgnored() {
         PlayerStats stats = new PlayerStats("Steve");
         stats.addDistance(-50);

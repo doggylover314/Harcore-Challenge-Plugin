@@ -1,15 +1,21 @@
 # HardcoreChallenge configuration. Everything here is re-read by /hcc reload.
 
-# Reset automatically when a death ends the run. When false, the player who died is out of the
-# run (they spectate) and the run carries on until an admin runs /hcc reset or /hcc stop.
-auto-reset-on-death: true
+# When deaths end the run:
+#   first-death  any participant's death ends the run for everyone
+#   <percent>%   a dead participant is out (they spectate, their items drop where they died) and
+#                the run ends once that share of the run's participants is dead, rounded up,
+#                at least one. For example 50% with 5 players ends it at the 3rd death; 100%
+#                means everyone has to die. Anything from 1% to 100%.
+# Can also be changed in game with /hcc resetwhen <first-death|N%>.
+reset-when: first-death
 
 # Seconds of countdown between the end of a run and everyone landing in the new world.
 # The new world is generated while the countdown runs.
 reset-countdown-seconds: 10
 
-# Whose death ends the run: "participants" or "anyone" (any player in a run world).
-reset-on-death-of: participants
+# Seconds a player takes no damage after being moved into a run (run start and late joiners).
+# 0 = off.
+spawn-protection-seconds: 60
 
 # Old run folders to keep in plugins/HardcoreChallenge/archive/ (0 = delete them).
 keep-old-worlds: 0
@@ -21,17 +27,15 @@ bosses:
   - elder_guardian
   - warden
 
+# What is announced to everyone. false turns that part off (victory and death chat still show).
 announce:
   chat: true
   title: true
   bossbar: true
   sound: true
 
-# Optional URL that receives a JSON POST when a run starts and ends. The body includes a
-# "content" field, so a Discord webhook URL works as-is.
-webhook-url: ""
-
 victory:
+  # false = killing bosses never wins the run
   enabled: true
   # false = the run is won as soon as any one boss from the list dies
   require-all-bosses: true
@@ -42,7 +46,8 @@ victory:
   freeze-seconds: 30
   fireworks: true
 
-# Sounds use namespaced sound keys, e.g. minecraft:entity.ender_dragon.death
+# Sound played for each event, as a namespaced key like minecraft:entity.ender_dragon.death.
+# Leave one empty to play nothing. All sounds are off if announce.sound is false.
 sounds:
   countdown-tick: minecraft:block.note_block.hat
   run-start: minecraft:entity.player.levelup
@@ -51,61 +56,116 @@ sounds:
   victory: minecraft:ui.toast.challenge_complete
 
 # All messages are MiniMessage: https://docs.papermc.io/adventure/minimessage/format
-# Placeholders are listed next to each message. Player names and death causes are inserted as
-# plain text, so they cannot inject formatting.
+# Placeholders are listed above each group of messages. Player names and death causes are
+# inserted as plain text, so they cannot inject formatting.
 messages:
+  # Put in front of chat messages. No placeholders.
   prefix: "<dark_gray>[<gradient:#ff4d4d:#ffb347>HCC</gradient>]</dark_gray> "
 
-  # <run> <seed> <bosses>
+  # run-started: <run> <seed> <bosses>. The title and subtitle: <run>
   run-started: "<green>Run <white>#<run></white> has started. Bosses to kill: <white><bosses></white>. One life for everyone. Good luck."
   run-started-title: "<green>Run #<run>"
   run-started-subtitle: "<gray>One life. Everyone."
 
   # <player> <cause> <killer> <death_message> <x> <y> <z> <world> <time> <run>
-  death: "<red><bold><player></bold> died</red> <gray>(<death_message>)</gray> <red>at <white><x> <y> <z></white> in <white><world></white> after <white><time></white>. Run #<run> is over."
+  # <death_message> is the vanilla death message ("Steve was slain by Zombie"); <cause> is the raw damage type.
+  death: "<red><death_message></red> <gray>at <white><x> <y> <z></white> in <white><world></white> after <white><time></white>. Run #<run> is over."
   death-title: "<dark_red><player> died"
-  death-subtitle: "<gray><cause> · <time>"
-  # Used when auto-reset-on-death is false: <player> <death_message> <time>
-  eliminated: "<red><player> is out of the run</red> <gray>(<death_message>)</gray>. The run continues."
+  death-subtitle: "<gray><death_message> · <time>"
+  # Used when a death has no vanilla message (old runs, or the message was lost): <player> <cause>
+  death-no-message: "<player> died to <cause>"
+  # Used when reset-when is a percentage and the death doesn't end the run yet:
+  # <player> <death_message> <time> <dead> <total> <needed>
+  eliminated: "<red><death_message></red><gray>. <player> is out (<white><dead>/<total></white> down, the run ends at <white><needed></white>)."
 
-  # <seconds> <reason>
+  # reset-when-changed: <player> <rule>
+  reset-when-changed: "<yellow><player> changed the reset rule to <white><rule></white>."
+  # reset-when-invalid: <value>
+  reset-when-invalid: "<red>'<value>' is not a valid rule. Use first-death or a percentage from 1% to 100%, like 50%."
+  # The rule as shown in /hcc status and reset-when-changed
+  reset-rule-first-death: "first death"
+  # <percent>
+  reset-rule-percent: "<percent>% dead"
+
+  # revived: <player> <admin>. The others: <player>
+  revived: "<green><player> was revived by <admin>."
+  revive-unavailable: "<red>/hcc revive only works while a run is going and reset-when is a percentage."
+  revive-not-found: "<red><player> is not out of the run."
+  revive-offline: "<red><player> has to be online to be revived."
+
+  # Sent to a player who joins a run that is already under way: <run> <count> <total> <time>
+  # Leave empty to turn it off.
+  late-join-welcome: "<green>You joined run <white>#<run></white>. <white><count>/<total></white> bosses down. One life for everyone."
+
+  # Shown on the action bar while spawn protection lasts: <seconds>. Leave empty to turn it off.
+  spawn-protection-actionbar: "<aqua>Spawn protection: <white><seconds>s"
+
+  # Countdown and reset: <seconds> <reason> (<seconds> only in the countdown messages)
   countdown-title: "<red>New world in <white><seconds></white>"
   countdown-subtitle: "<gray><reason>"
   countdown-chat: "<gray>New world in <white><seconds></white>…"
+  # Shown every second if the countdown ends before the new world is ready: <reason>
+  preparing-title: "<yellow>Preparing world…"
+  preparing-subtitle: "<gray>Almost there"
   resetting: "<yellow>Generating a new world… <gray>(<reason>)"
+  # reset-forced: <player> <reason>. reset-forced-no-reason: <player>. reset-failed: <error>
   reset-forced: "<yellow><player> forced a reset<gray>: <reason>"
+  reset-forced-no-reason: "<yellow><player> forced a reset."
   reset-failed: "<red>Could not create the next world: <error>. The run has been stopped; see the console."
   default-reset-reason: "starting a new run"
+
+  # Reasons stored in the run log and shown as <reason> above. Plain text only, no formatting.
+  # reason-forced and reason-stopped: <player>. reason-death: <player>. reason-victory: <run>
+  reason-forced: "forced by <player>"
+  reason-stopped: "stopped by <player>"
+  reason-death: "<player> died"
+  reason-victory: "run #<run> was won"
+  reason-restart: "resuming after a restart"
+  reason-start-failed: "the run could not finish starting"
+  reason-crashed: "server stopped unexpectedly"
 
   # <boss> <count> <total> <time> <run>
   boss-killed: "<gold><bold><boss></bold> has fallen!</gold> <gray>(<count>/<total>, <time>)</gray>"
   boss-killed-title: "<gold><boss> defeated"
   boss-killed-subtitle: "<yellow><count>/<total> bosses"
 
-  # <run> <time> <order> <participants>
+  # <run> <time> <order> <participants> (victory-stop has none)
   victory-title: "<gradient:#ffd700:#ff8c00><bold>VICTORY"
   victory-subtitle: "<yellow>Run #<run> cleared in <time>"
   victory: "<gold><bold>Run #<run> is WON!</bold></gold> <yellow>Time: <white><time></white>. Kill order: <white><order></white>. Champions: <white><participants></white>."
   victory-stop: "<gray>The world stays open for sightseeing. <white>/hcc start</white> begins a new run."
 
+  # stopped: <player>
   stopped: "<yellow>The challenge has been stopped by <player>. Everyone is spectating."
+  # No placeholders
   run-not-active: "<red>No run is active. Use /hcc start."
   run-already-active: "<red>A run is already active. Use /hcc reset or /hcc stop first."
+  state-broken: "<red>state.yml is broken, so no run can be started. See the state.yml.broken copy in the plugin folder, fix or remove state.yml and restart the server."
   transition-in-progress: "<red>A reset is already in progress."
   reloaded: "<green>Configuration reloaded."
   no-players: "<red>Nobody online can play (they need hardcorechallenge.play)."
 
+  # /hcc status. status-header: <run> <phase> (one of the phase-* messages). status-idle: <run>
   status-header: "<gold><bold>Hardcore Challenge</bold></gold> <gray>- run #<run> · <phase>"
+  status-none: "<gold><bold>Hardcore Challenge</bold></gold> <gray>- no run yet. Use /hcc start."
   status-idle: "<gold><bold>Hardcore Challenge</bold></gold> <gray>- no run active (last run: #<run>)"
+  phase-running: "running"
+  phase-resetting: "resetting"
+  phase-victory: "victory"
+  # status-time: <time> <seed> <world>
   status-time: "<gray>Elapsed: <white><time></white>   Seed: <white><seed></white>   World: <white><world></white>"
+  # <rule> <dead> <total> <needed>
+  status-rule: "<gray>Reset when: <white><rule></white>   Dead: <white><dead>/<total></white> <gray>(ends at <needed>)"
+  # status-boss-done: <boss> <time>. status-boss-todo: <boss>. status-participants: <players>
   status-boss-done: "  <green>✔ <boss></green> <gray>(<time>)"
   status-boss-todo: "  <red>✘ <boss>"
   status-participants: "<gray>Participants: <players>"
-  # Formatting for a name in participant lists
+  # Formatting for a name in participant lists: <name>
   status-player-alive: "<green><name></green>"
   status-player-offline: "<gray><name></gray>"
   status-player-out: "<red><st><name></st></red>"
 
+  # How a run's outcome is shown in lists. No placeholders.
   outcome-victory: "<gold><bold>WIN</bold></gold>"
   outcome-death: "<red>DEATH</red>"
   outcome-forced-reset: "<yellow>RESET</yellow>"
@@ -113,6 +173,7 @@ messages:
   outcome-live: "<aqua>LIVE</aqua>"
   none: "none"
 
+  # Sidebar. sidebar-run: <run>. sidebar-time: <time>. sidebar-boss-*: <boss>. sidebar-players: <alive> <total>
   sidebar-title: "<gradient:#ff4d4d:#ffb347><bold>HARDCORE</bold></gradient>"
   sidebar-run: "<gray>Run <white>#<run>"
   sidebar-time: "<gray>Time <white><time>"
@@ -123,10 +184,11 @@ messages:
   sidebar-phase-victory: "<gold>Victory!"
   sidebar-phase-paused: "<gray>Paused (nobody on)"
 
-  # <count> <total> <run> <time>
+  # Boss bar: <count> <total> <run> <time>
   bossbar: "<gold>Bosses <white><count>/<total></white> <gray>·</gray> Run <white>#<run></white> <gray>·</gray> <white><time>"
 
-  # Runs list: /hcc runs, /hcc run <number>
+  # Runs list (/hcc runs). runs-header: <filter> <count>. runs-line: <run> <outcome> <time> <bosses> <players> <date>
+  # runs-line-hover: <run>. page-info: <page> <pages>
   runs-empty: "<gray>No runs yet."
   runs-filter-all: "all"
   runs-header: "<gold><bold>Runs</bold></gold> <gray>(<filter>, <count> total) - click one for details"
@@ -138,6 +200,12 @@ messages:
   page-next-disabled: "<dark_gray>[Next »]"
   page-info: "<gray>Page <page>/<pages>"
 
+  # Run details (/hcc run <number>)
+  # run-header: <run> <outcome> <time> <date>. run-seed: <seed> <origin>. run-origin-replay: <of>
+  # run-players: <players>. run-bosses: <bosses>. run-boss: <boss> <time> <player>
+  # run-death: <player> <cause> <killer> <death_message> <x> <y> <z> <world>. run-reason: <reason>
+  # run-stats-line: <player> <share> <boss_kills> <mobs> <damage> <distance> <played>
+  # run-not-found, run-delete-confirm, run-deleted: <run>. run-delete-expired: <run>. run-delete-other: <run> <pending>
   run-header: "<gold><bold>Run #<run></bold></gold> <outcome> <gray>· <time> · started <date>"
   run-seed: "<gray>Seed: <white><seed></white><origin>"
   run-seed-hover: "<gray>Click to copy the seed"
@@ -146,7 +214,7 @@ messages:
   run-players: "<gray>Players: <white><players>"
   run-bosses: "<gray>Bosses: <bosses>"
   run-boss: "<white><boss></white> <gray><time> (<player>)"
-  run-death: "<red>☠ <player></red> <gray>died to <white><cause></white><killer> at <x> <y> <z> (<world>)"
+  run-death: "<red>☠ <death_message></red> <gray>at <x> <y> <z> (<world>)"
   run-reason: "<gray>Reason: <reason>"
   run-stats-header: "<gray>Players (boss damage share · boss kills · mobs · damage · distance · time played):"
   run-stats-line: "  <white><player></white> <gray>· <yellow><share></yellow> · <boss_kills> · <mobs> · <damage> · <distance> · <played>"
@@ -159,11 +227,15 @@ messages:
   run-delete-confirm: "<yellow>Delete run #<run> from the list? This can't be undone."
   run-delete-button: "<red><bold>[Confirm]"
   run-delete-expired: "<red>Nothing to confirm for run #<run>. Run /hcc run <run> delete again."
+  # <run> = the run named in the click, <pending> = the run waiting for confirmation
+  run-delete-other: "<red>You are deleting run #<pending>, not #<run>. Run /hcc run <run> delete first to change your mind."
   run-deleted: "<green>Deleted run #<run>."
 
+  # Timeline (/hcc run <number> timeline). timeline-header: <run> <count>. timeline-line: <time> <event>
   timeline-header: "<gold><bold>Run #<run> timeline</bold></gold> <gray>(<count> events)"
   timeline-line: "<gray><time></gray> <event>"
-  # Timeline entries: <player> and <detail> (boss, dimension, item, structure or outcome)
+  # Timeline entries: <player> and <detail> (boss, dimension, item, structure or outcome).
+  # event-death also has <death_message>.
   event-run-started: "<green>Run started"
   event-joined: "<white><player></white> <gray>joined"
   event-left: "<white><player></white> <gray>left"
@@ -174,15 +246,45 @@ messages:
   event-boss-fight-started: "<white><player></white> <yellow>started the <detail> fight"
   event-boss-killed: "<gold><detail> killed</gold> <gray>(final hit: <player>)"
   event-eliminated: "<white><player></white> <red>is out (<detail>)"
-  event-death: "<red><player> died to <detail>"
+  event-revived: "<white><player></white> <green>was revived"
+  event-death: "<red><death_message>"
   event-run-ended: "<gray>Run ended: <detail>"
 
+  # Shown in chat when a run ends by death or a forced reset, as the countdown starts.
+  # Leave recap-header blank to turn the whole recap off, or blank any single line to hide just that line.
+  # recap-header: <run> <time>
+  recap-header: "<gold><bold>Run #<run> recap</bold></gold> <gray>- lasted <white><time></white>"
+  # <count> <total> <bosses>
+  recap-bosses: "<gray>Bosses killed: <white><count>/<total></white> <gray>(<bosses>)"
+  # <dimension>, one of the three recap-dimension-* messages
+  recap-dimension: "<gray>Furthest reached: <white><dimension>"
+  recap-dimension-overworld: "the Overworld"
+  recap-dimension-nether: "the Nether"
+  recap-dimension-end: "the End"
+  # Only shown when somebody damaged a boss: <player> <share>
+  recap-top-damage: "<gray>Most boss damage: <white><player></white> <gray>(<share>)"
+  # Only shown for deaths: <player> <cause> <killer> <death_message> (killer is empty or " (name)")
+  recap-death: "<gray>Fatal blow: <red><death_message>"
+
+  # Lists the /hcc commands. No placeholders.
   help: |-
     <gold><bold>Hardcore Challenge</bold></gold>
     <yellow>/hcc start [replay <run> | seed <seed>]</yellow> <gray>- begin a new run in a fresh world</gray>
-    <yellow>/hcc reset [reason]</yellow> <gray>- force a reset now</gray>
+    <yellow>/hcc reset [reason]</yellow> <gray>- end the run and start a new one</gray>
     <yellow>/hcc stop</yellow> <gray>- end the run; everyone spectates</gray>
     <yellow>/hcc status</yellow> <gray>- run, time, bosses, participants</gray>
-    <yellow>/hcc runs [wins|deaths|resets|stopped|player <name>] [page]</yellow> <gray>- every run</gray>
-    <yellow>/hcc run <number> [timeline|delete]</yellow> <gray>- one run in detail</gray>
+    <yellow>/hcc runs [wins|deaths|resets|stopped|player <name>] [page]</yellow> <gray>- every run (also /hcc history)</gray>
+    <yellow>/hcc run <number></yellow> <gray>- one run in detail</gray>
+    <yellow>/hcc run <number> timeline [page]</yellow> <gray>- what happened, in order</gray>
+    <yellow>/hcc run <number> delete</yellow> <gray>- remove a run from the list</gray>
+    <yellow>/hcc resetwhen <first-death|N%></yellow> <gray>- when deaths end the run</gray>
+    <yellow>/hcc revive <player></yellow> <gray>- bring back a player who is out</gray>
     <yellow>/hcc reload</yellow> <gray>- reload config.yml</gray>
+
+  # Shown to players without hardcorechallenge.admin
+  help-player: |-
+    <gold><bold>Hardcore Challenge</bold></gold>
+    <yellow>/hcc status</yellow> <gray>- run, time, bosses, participants</gray>
+    <yellow>/hcc runs [wins|deaths|resets|stopped|player <name>] [page]</yellow> <gray>- every run (also /hcc history)</gray>
+    <yellow>/hcc run <number></yellow> <gray>- one run in detail</gray>
+    <yellow>/hcc run <number> timeline [page]</yellow> <gray>- what happened, in order</gray>

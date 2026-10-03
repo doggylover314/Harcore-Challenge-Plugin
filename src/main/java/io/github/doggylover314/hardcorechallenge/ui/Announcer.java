@@ -71,6 +71,18 @@ public final class Announcer {
         Bukkit.getOnlinePlayers().forEach(player -> player.showTitle(Title.title(title, subtitle, times)));
     }
 
+    /** Shown every second when the countdown is over but the new world is not ready yet. */
+    public void preparing(TagResolver... placeholders) {
+        Component title = messages.plain("preparing-title", placeholders);
+        if (settings.announceTitle()) {
+            Component subtitle = messages.plain("preparing-subtitle", placeholders);
+            Title.Times times = Title.Times.times(Duration.ZERO, Duration.ofMillis(1_100), Duration.ofMillis(200));
+            Bukkit.getOnlinePlayers().forEach(player -> player.showTitle(Title.title(title, subtitle, times)));
+        } else {
+            Bukkit.getOnlinePlayers().forEach(player -> player.sendActionBar(title));
+        }
+    }
+
     public boolean titlesEnabled() {
         return settings.announceTitle();
     }
