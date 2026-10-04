@@ -6,6 +6,7 @@ import io.github.doggylover314.hardcorechallenge.core.Roster;
 import io.github.doggylover314.hardcorechallenge.core.RunPhase;
 import io.github.doggylover314.hardcorechallenge.core.RunSnapshot;
 import io.github.doggylover314.hardcorechallenge.core.SeedChoice;
+import io.github.doggylover314.hardcorechallenge.core.SeedList;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -62,18 +63,33 @@ public final class DataStore {
     /**
      * Everything needed to resume after a restart.
      *
-     * @param pendingSeed the replay / custom seed requested for the run being created while
-     *                    RESETTING, or null (random seed or not resetting)
-     * @param unreadable  state.yml exists but could not be parsed; everything else is then an empty
-     *                    initial state that must not be acted on or saved over the file
+     * @param pendingSeed  the replay / custom / seed list seed picked for the run being created while
+     *                     RESETTING, or null (random seed or not resetting)
+     * @param seedPosition where a cycle-mode seed list stands: index of the entry that is next
+     * @param seedPicked   index of the seed list entry the run being created while RESETTING took, -1 if none
+     *                     or {@link SeedList#DROPPED}
+     * @param unconsumedSeed seed list entry of a run that started while config.yml had an error, so it could
+     *                     not be used up yet, with the pick it had; null if none
+     * @param unreadable   state.yml exists but could not be parsed; everything else is then an empty
+     *                     initial state that must not be acted on or saved over the file
      */
-    public record PersistedState(RunSnapshot run, List<String> worldPaths, Roster roster, SeedChoice pendingSeed, boolean unreadable) {
+    public record PersistedState(RunSnapshot run, List<String> worldPaths, Roster roster, SeedChoice pendingSeed,
+                                 int seedPosition, int seedPicked, SeedList.Unconsumed unconsumedSeed, boolean unreadable) {
+        public PersistedState(RunSnapshot run, List<String> worldPaths, Roster roster, SeedChoice pendingSeed,
+                              int seedPosition, int seedPicked, SeedList.Unconsumed unconsumedSeed) {
+            this(run, worldPaths, roster, pendingSeed, seedPosition, seedPicked, unconsumedSeed, false);
+        }
+
+        public PersistedState(RunSnapshot run, List<String> worldPaths, Roster roster, SeedChoice pendingSeed, int seedPosition) {
+            this(run, worldPaths, roster, pendingSeed, seedPosition, -1, null, false);
+        }
+
         public PersistedState(RunSnapshot run, List<String> worldPaths, Roster roster, SeedChoice pendingSeed) {
-            this(run, worldPaths, roster, pendingSeed, false);
+            this(run, worldPaths, roster, pendingSeed, 0, -1, null, false);
         }
 
         public PersistedState(RunSnapshot run, List<String> worldPaths, Roster roster) {
-            this(run, worldPaths, roster, null, false);
+            this(run, worldPaths, roster, null, 0, -1, null, false);
         }
     }
 
@@ -81,7 +97,7 @@ public final class DataStore {
         Roster roster = new Roster();
         YamlConfiguration yaml = read(stateFile);
         if (yaml == null) {
-            return new PersistedState(RunSnapshot.initial(), List.of(), roster, null, Files.isRegularFile(stateFile));
+            return new PersistedState(RunSnapshot.initial(), List.of(), roster, null, 0, -1, null, Files.isRegularFile(stateFile));
         }
 
         RunPhase phase;
@@ -127,7 +143,31 @@ public final class DataStore {
                 }
             });
         }
-        return new PersistedState(run, yaml.getStringList("world-paths"), roster, readPendingSeed(yaml));
+        return new PersistedState(run, yaml.getStringList("world-paths"), roster, readPendingSeed(yaml),
+                Math.max(0, yaml.getInt("seed-position", 0)), readPick(yaml.getInt("seed-picked", -1)), readUnconsumed(yaml));
+    }
+
+    private static SeedList.Unconsumed readUnconsumed(YamlConfiguration yaml) {
+        String entry = yaml.getString("unconsumed-list-entry");
+        if (entry == null) {
+            return null;
+        }
+        return new SeedList.Unconsumed(entry, readPick(yaml.getInt("unconsumed-list-picked", -1)));
+    }
+
+    /** A saved pick index: an index, -1 (none) or {@link SeedList#DROPPED}; anything else is none. */
+    private static int readPick(int raw) {
+        return raw == SeedList.DROPPED ? raw : Math.max(-1, raw);
+    }
+
+    /** A seed list mode as written in config.yml; null if missing (state.yml from before it was recorded). */
+    private static SeedList.Mode readMode(String raw) {
+        for (SeedList.Mode mode : SeedList.Mode.values()) {
+            if (mode.configValue().equals(raw)) {
+                return mode;
+            }
+        }
+        return null;
     }
 
     private static SeedChoice readPendingSeed(YamlConfiguration yaml) {
@@ -136,7 +176,8 @@ public final class DataStore {
             return null;
         }
         Integer replayOf = section.contains("replay-of") ? section.getInt("replay-of") : null;
-        return new SeedChoice(section.getLong("seed"), replayOf, section.getBoolean("custom"));
+        return new SeedChoice(section.getLong("seed"), replayOf, section.getBoolean("custom"), section.getString("list-entry"),
+                readMode(section.getString("list-mode")));
     }
 
     public void saveState(PersistedState state) {
@@ -166,7 +207,24 @@ public final class DataStore {
                 seed.put("replay-of", pending.replayOf());
             }
             seed.put("custom", pending.custom());
+            if (pending.fromList()) {
+                seed.put("list-entry", pending.listEntry());
+                if (pending.listMode() != null) {
+                    seed.put("list-mode", pending.listMode().configValue());
+                }
+            }
             yaml.createSection("pending-seed", seed);
+        }
+        yaml.set("seed-position", state.seedPosition());
+        if (state.seedPicked() != -1) {
+            yaml.set("seed-picked", state.seedPicked());
+        }
+        SeedList.Unconsumed unconsumed = state.unconsumedSeed();
+        if (unconsumed != null) {
+            yaml.set("unconsumed-list-entry", unconsumed.entry());
+            if (unconsumed.picked() != -1) {
+                yaml.set("unconsumed-list-picked", unconsumed.picked());
+            }
         }
 
         Roster roster = state.roster();

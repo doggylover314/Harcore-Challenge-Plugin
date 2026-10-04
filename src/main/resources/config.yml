@@ -13,6 +13,19 @@ reset-when: first-death
 # The new world is generated while the countdown runs.
 reset-countdown-seconds: 10
 
+# Seeds for the next runs instead of random ones. Used by /hcc start, /hcc reset, and the reset after
+# a death or a win. /hcc start seed and /hcc start replay never use the list.
+# Can also be changed in game with /hcc seeds.
+seed-list:
+  # once = play each seed one time, in order, then go back to random seeds (default)
+  # cycle = go through the list in order and start over at the end
+  mode: once
+  # Seeds for the next runs, in order. Numbers or text (text is turned into a number like vanilla does).
+  # Write whole numbers like 12345 or -987 as they are. Put anything else in quotes, like "my text seed"
+  # or "010", because YAML would read yes as true and 010 as 8.
+  # For example: seeds: [12345, -987, "my text seed", "010"]
+  seeds: []
+
 # Seconds a player takes no damage after being moved into a run (run start and late joiners).
 # 0 = off.
 spawn-protection-seconds: 60
@@ -82,6 +95,10 @@ messages:
   reset-when-changed: "<yellow><player> changed the reset rule to <white><rule></white>."
   # reset-when-invalid: <value>
   reset-when-invalid: "<red>'<value>' is not a valid rule. Use first-death or a percentage from 1% to 100%, like 50%."
+  # Sent instead of saving a change (/hcc resetwhen, /hcc seeds) while config.yml has a YAML error. No placeholders.
+  config-unreadable: "<red>config.yml has an error, so nothing was changed. Fix the file and try again."
+  # Sent instead of the list by /hcc seeds while config.yml has a YAML error. No placeholders.
+  seeds-config-error: "<red>config.yml has an error, so the seed list can't be shown. Fix the file and try again."
   # The rule as shown in /hcc status and reset-when-changed
   reset-rule-first-death: "first death"
   # <percent>
@@ -92,6 +109,23 @@ messages:
   revive-unavailable: "<red>/hcc revive only works while a run is going and reset-when is a percentage."
   revive-not-found: "<red><player> is not out of the run."
   revive-offline: "<red><player> has to be online to be revived."
+
+  # /hcc seeds. seeds-header: <mode> <count>. seeds-empty: <mode>. seeds-line and seeds-line-next: <number> <seed>
+  seeds-header: "<gold><bold>Seed list</bold></gold> <gray>(mode: <white><mode></white>, <count> in the list)"
+  seeds-empty: "<gray>The seed list is empty (mode: <white><mode></white>), so runs use random seeds. Add one with /hcc seeds add <seed>."
+  seeds-line: "  <gray><number>.</gray> <white><seed>"
+  seeds-line-next: "  <gray><number>.</gray> <green><seed></green> <gray>← next"
+  # seeds-added: <seed> <number>. seeds-removed: <seed> <number>. seeds-cleared: <count>
+  seeds-added: "<green>Added <white><seed></white> to the seed list as number <number>."
+  seeds-removed: "<yellow>Removed <white><seed></white> (number <number>) from the seed list."
+  seeds-cleared: "<yellow>Cleared the seed list (<count> removed). Runs use random seeds."
+  # <number> <count>
+  seeds-remove-invalid: "<red>There is no seed number <number>. The list has <count>."
+  seeds-add-blank: "<red>Give a seed, like /hcc seeds add 12345 or /hcc seeds add my seed."
+  seeds-mode-once: "<yellow>Seed list mode is now once: each seed is played one time, then removed."
+  seeds-mode-cycle: "<yellow>Seed list mode is now cycle: the list starts over after the last seed."
+  # Sent to admins (and the console) when the last seed of a once list has been used. No placeholders.
+  seeds-used-up: "<yellow>The seed list is empty. The next runs use random seeds."
 
   # Sent to a player who joins a run that is already under way: <run> <count> <total> <time>
   # Leave empty to turn it off.
@@ -202,6 +236,7 @@ messages:
 
   # Run details (/hcc run <number>)
   # run-header: <run> <outcome> <time> <date>. run-seed: <seed> <origin>. run-origin-replay: <of>
+  # (run-origin-custom and run-origin-list have no placeholders)
   # run-players: <players>. run-bosses: <bosses>. run-boss: <boss> <time> <player>
   # run-death: <player> <cause> <killer> <death_message> <x> <y> <z> <world>. run-reason: <reason>
   # run-stats-line: <player> <share> <boss_kills> <mobs> <damage> <distance> <played>
@@ -211,6 +246,7 @@ messages:
   run-seed-hover: "<gray>Click to copy the seed"
   run-origin-replay: " <gray>· replay of #<of>"
   run-origin-custom: " <gray>· custom seed"
+  run-origin-list: " <gray>· from seed list"
   run-players: "<gray>Players: <white><players>"
   run-bosses: "<gray>Bosses: <bosses>"
   run-boss: "<white><boss></white> <gray><time> (<player>)"
@@ -278,6 +314,7 @@ messages:
     <yellow>/hcc run <number> timeline [page]</yellow> <gray>- what happened, in order</gray>
     <yellow>/hcc run <number> delete</yellow> <gray>- remove a run from the list</gray>
     <yellow>/hcc resetwhen <first-death|N%></yellow> <gray>- when deaths end the run</gray>
+    <yellow>/hcc seeds [add <seed> | remove <number> | clear | mode <once|cycle>]</yellow> <gray>- seeds for the next runs</gray>
     <yellow>/hcc revive <player></yellow> <gray>- bring back a player who is out</gray>
     <yellow>/hcc reload</yellow> <gray>- reload config.yml</gray>
 

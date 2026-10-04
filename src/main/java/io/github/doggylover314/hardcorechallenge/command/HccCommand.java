@@ -11,6 +11,7 @@ import com.mojang.brigadier.tree.LiteralCommandNode;
 import io.github.doggylover314.hardcorechallenge.ChallengeManager;
 import io.github.doggylover314.hardcorechallenge.HardcoreChallengePlugin;
 import io.github.doggylover314.hardcorechallenge.core.Outcome;
+import io.github.doggylover314.hardcorechallenge.core.SeedList;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.command.brigadier.Commands;
 import java.util.Locale;
@@ -88,11 +89,26 @@ public final class HccCommand {
                                 .suggests((ctx, builder) -> suggestRules(builder))
                                 .executes(ctx -> run(ctx, manager, (m, sender) ->
                                         m.setResetWhen(sender, StringArgumentType.getString(ctx, "rule"))))))
+                .then(Commands.literal("seeds")
+                        .requires(HccCommand::isAdmin)
+                        .executes(ctx -> run(ctx, manager, ChallengeManager::sendSeeds))
+                        .then(Commands.literal("add")
+                                .then(Commands.argument("seed", StringArgumentType.greedyString())
+                                        .executes(ctx -> run(ctx, manager, (m, sender) ->
+                                                m.addSeed(sender, StringArgumentType.getString(ctx, "seed"))))))
+                        .then(Commands.literal("remove")
+                                .then(Commands.argument("number", IntegerArgumentType.integer(1))
+                                        .suggests((ctx, builder) -> suggestSeedNumbers(builder, manager))
+                                        .executes(ctx -> run(ctx, manager, (m, sender) -> m.removeSeed(sender, number(ctx))))))
+                        .then(Commands.literal("clear")
+                                .executes(ctx -> run(ctx, manager, ChallengeManager::clearSeeds)))
+                        .then(seedModeNode(manager)))
                 .then(Commands.literal("reload")
                         .requires(HccCommand::isAdmin)
                         .executes(ctx -> run(ctx, manager, (m, sender) -> {
-                            m.reload();
-                            sender.sendMessage(m.messages().chat("reloaded"));
+                            // Reload first: the reply uses the new messages.
+                            boolean ok = m.reload();
+                            sender.sendMessage(m.messages().chat(ok ? "reloaded" : "config-unreadable"));
                         })))
                 .build();
     }
@@ -120,6 +136,16 @@ public final class HccCommand {
         return node;
     }
 
+    /** /hcc seeds mode <once|cycle> */
+    private static LiteralArgumentBuilder<CommandSourceStack> seedModeNode(Supplier<ChallengeManager> manager) {
+        LiteralArgumentBuilder<CommandSourceStack> node = Commands.literal("mode");
+        for (SeedList.Mode mode : SeedList.Mode.values()) {
+            node.then(Commands.literal(mode.configValue())
+                    .executes(ctx -> run(ctx, manager, (m, sender) -> m.setSeedMode(sender, mode))));
+        }
+        return node;
+    }
+
     private static int number(CommandContext<CommandSourceStack> ctx) {
         return IntegerArgumentType.getInteger(ctx, "number");
     }
@@ -134,6 +160,19 @@ public final class HccCommand {
             for (int number : manager.runNumbers()) {
                 String text = String.valueOf(number);
                 if (text.startsWith(builder.getRemaining())) {
+                    builder.suggest(number);
+                }
+            }
+        }
+        return builder.buildFuture();
+    }
+
+    private static CompletableFuture<Suggestions> suggestSeedNumbers(SuggestionsBuilder builder, Supplier<ChallengeManager> supplier) {
+        ChallengeManager manager = supplier.get();
+        if (manager != null) {
+            int count = manager.seedCount();
+            for (int number = 1; number <= count; number++) {
+                if (String.valueOf(number).startsWith(builder.getRemaining())) {
                     builder.suggest(number);
                 }
             }

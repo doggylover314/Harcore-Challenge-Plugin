@@ -16,6 +16,8 @@ import io.github.doggylover314.hardcorechallenge.core.RunQuery;
 import io.github.doggylover314.hardcorechallenge.core.TimelineEvent;
 import io.github.doggylover314.hardcorechallenge.core.RunStateMachine;
 import io.github.doggylover314.hardcorechallenge.core.SeedChoice;
+import io.github.doggylover314.hardcorechallenge.core.SeedList;
+import io.github.doggylover314.hardcorechallenge.core.Seeds;
 import io.github.doggylover314.hardcorechallenge.core.TimeFormat;
 import io.github.doggylover314.hardcorechallenge.data.DataStore;
 import io.github.doggylover314.hardcorechallenge.data.RunArchive;
@@ -56,6 +58,7 @@ import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.ExperienceOrb;
 import org.bukkit.entity.Firework;
@@ -101,6 +104,17 @@ public final class ChallengeManager {
     private SeedChoice pendingChoice = SeedChoice.RANDOM;
     /** Seed request found in state.yml on startup, used if the server stopped during a reset. */
     private SeedChoice restoredChoice = SeedChoice.RANDOM;
+    /** Where a cycle-mode seed list stands (index of the next entry); persisted in state.yml. */
+    private int seedPosition;
+    /**
+     * Index of the list entry the reset in progress took, -1 if none or {@link SeedList#DROPPED} if an edit removed
+     * it; follows edits to the list. Persisted in state.yml.
+     */
+    private int seedPicked = -1;
+    /** Entry of a run that started while config.yml had an error: still to be used up. Persisted in state.yml. */
+    private SeedList.Unconsumed unconsumed;
+    /** Number of seeds in the list as last read, for tab completion. */
+    private int seedCount;
     private BukkitTask victoryTask;
     private BukkitTask fireworksTask;
     private BukkitTask ticker;
@@ -159,6 +173,10 @@ public final class ChallengeManager {
         currentPaths = List.copyOf(state.worldPaths());
         restoredChoice = state.pendingSeed() != null ? state.pendingSeed() : SeedChoice.RANDOM;
         configureMachine();
+        seedPosition = state.seedPosition();
+        seedPicked = restoredChoice.fromList() ? state.seedPicked() : -1;
+        unconsumed = state.unconsumedSeed();
+        keepSeedPositionInList();
 
         announcer = new Announcer(settings, messages, logger);
         hud = new Hud(machine, roster::aliveInRun, roster::runSize, settings, messages);
@@ -249,17 +267,27 @@ public final class ChallengeManager {
         }
     }
 
-    public void reload() {
-        plugin.reloadConfig();
+    /** Re-reads config.yml. False if it has an error: the current settings stay then. */
+    public boolean reload() {
+        if (!reloadConfigFile()) {
+            return false;
+        }
         settings = Settings.load(plugin.getConfig(), logger);
         messages = new Messages(plugin.getConfig(), logger);
         configureMachine();
+        followSeedMode(settings.seedMode());
+        int position = seedPosition;
+        keepSeedPositionInList();
+        if (position != seedPosition) {
+            save();
+        }
         announcer.reload(settings, messages);
         hud.reload(settings, messages);
         if (machine.reevaluateVictory()) {
             startVictory();
         }
         enforceResetRule();
+        return true;
     }
 
     private void configureMachine() {
@@ -292,7 +320,7 @@ public final class ChallengeManager {
 
     private DataStore.PersistedState persistedState() {
         SeedChoice pending = machine.phase() == RunPhase.RESETTING ? pendingChoice : null;
-        return new DataStore.PersistedState(machine.snapshot(), currentPaths, roster, pending);
+        return new DataStore.PersistedState(machine.snapshot(), currentPaths, roster, pending, seedPosition, seedPicked, unconsumed);
     }
 
     private void save() {
@@ -353,13 +381,7 @@ public final class ChallengeManager {
 
     /** /hcc start seed <seed>. Text that isn't a number is hashed like vanilla does. */
     public void startWithSeed(CommandSender sender, String rawSeed) {
-        long seed;
-        try {
-            seed = Long.parseLong(rawSeed.trim());
-        } catch (NumberFormatException e) {
-            seed = rawSeed.trim().hashCode();
-        }
-        start(sender, new SeedChoice(seed, null, true));
+        start(sender, new SeedChoice(Seeds.parse(rawSeed), null, true));
     }
 
     private void start(CommandSender sender, SeedChoice choice) {
@@ -437,7 +459,7 @@ public final class ChallengeManager {
      * Runs the countdown and creates the next world at the same time. When both are done, everyone is
      * moved over and the old worlds are retired. The machine must already be in RESETTING.
      */
-    private void runTransition(String reason, SeedChoice choice) {
+    private void runTransition(String reason, SeedChoice requested) {
         cancelTransition();
         cancel(victoryTask);
         cancel(fireworksTask);
@@ -449,6 +471,9 @@ public final class ChallengeManager {
         while (worlds.isRunNumberTaken(newRun)) {
             newRun++;
         }
+        // A run that would get a random seed takes the next one from the seed list, if there is one.
+        // The entry is only used up once the run has started.
+        SeedChoice choice = requested.seed() == null ? nextListSeed().orElse(requested) : requested;
         long seed = choice.seed() != null ? choice.seed() : newSeed(machine.seed());
         transition = new Transition(machine.runNumber(), currentPaths, newRun, reason, choice);
         pendingChoice = choice;
@@ -552,7 +577,9 @@ public final class ChallengeManager {
         } catch (RuntimeException e) {
             // Never leave a half-started run behind without saying so.
             failTransition(t, e);
+            return;
         }
+        useListSeed(t.choice);
     }
 
     private void completeTransition(Transition t) {
@@ -573,7 +600,8 @@ public final class ChallengeManager {
             logger.warning("Run #" + t.newRun + " reused an existing world folder, so its seed is " + machine.seed()
                     + " instead of the requested " + t.choice.seed());
         }
-        live = new RunLog(t.newRun, machine.seed(), machine.worldName(), machine.startedAt(), t.choice.replayOf(), t.choice.custom());
+        live = new RunLog(t.newRun, machine.seed(), machine.worldName(), machine.startedAt(), t.choice.replayOf(), t.choice.custom(),
+                t.choice.fromList());
         tracker.reset();
         logEvent(TimelineEvent.Type.RUN_STARTED, null, null);
         save();
@@ -654,6 +682,7 @@ public final class ChallengeManager {
         if (t == null || t.completed) {
             return;
         }
+        seedPicked = -1;
         t.abort();
         if (t.worlds != null) {
             worlds.retire(t.newRun, t.worlds.paths(), fallbackLocation(), 0);
@@ -667,6 +696,7 @@ public final class ChallengeManager {
             transition = null;
         }
         pendingChoice = SeedChoice.RANDOM;
+        seedPicked = -1;
         if (t.started) {
             // The run had begun: close its log and clean up the old worlds like a normal reset would.
             endLog(Outcome.STOPPED, null, reasonText("reason-start-failed"));
@@ -842,7 +872,10 @@ public final class ChallengeManager {
             return;
         }
         // Pick up edits made to config.yml since the last reload before writing it back.
-        plugin.reloadConfig();
+        if (!reloadConfigFile()) {
+            sender.sendMessage(messages.chat("config-unreadable"));
+            return;
+        }
         plugin.getConfig().set("reset-when", rule.get().configValue());
         plugin.saveConfig();
         reload();
@@ -854,6 +887,279 @@ public final class ChallengeManager {
     private Component ruleText(ResetRule rule) {
         return messages.plain(rule.firstDeath() ? "reset-rule-first-death" : "reset-rule-percent",
                 Placeholder.unparsed("percent", String.valueOf(rule.percent())));
+    }
+
+    // ================================================================= seed list
+
+    /** The list as it was at the last reload. */
+    private SeedList seedList() {
+        return new SeedList(settings.seedMode(), settings.seeds(), seedPosition, seedPicked);
+    }
+
+    /** False if config.yml has a YAML error: Bukkit would load it as empty, and that must not be saved. */
+    private boolean configReadable() {
+        return Settings.isReadable(plugin.getDataPath().resolve("config.yml"), logger);
+    }
+
+    /**
+     * Wraps the saved position and pick into the list of the last reload (the list may have been
+     * edited by hand) and notes its size. Not while config.yml has an error: the list looks empty
+     * then, and the position has to survive until the file is fixed.
+     */
+    private void keepSeedPositionInList() {
+        if (configReadable()) {
+            SeedList list = seedList();
+            seedPosition = list.position();
+            seedPicked = list.picked();
+            seedCount = list.size();
+        }
+    }
+
+    /**
+     * Keeps the mode recorded on the pick of a reset in progress in step with config.yml, since the run that
+     * starts goes by it. Called after every successful read of the file, never when it has an error.
+     */
+    private void followSeedMode(SeedList.Mode mode) {
+        if (!pendingChoice.fromList() || pendingChoice.listMode() == mode) {
+            return;
+        }
+        SeedChoice before = pendingChoice;
+        pendingChoice = before.withListMode(mode);
+        if (transition != null && transition.choice.equals(before)) {
+            transition.choice = pendingChoice;
+        }
+        save();
+    }
+
+    /** Re-reads config.yml. False if it has a YAML error. */
+    private boolean reloadConfigFile() {
+        if (!configReadable()) {
+            return false;
+        }
+        plugin.reloadConfig();
+        return true;
+    }
+
+    /** The list as it is in config.yml right now, so hand edits count, with the saved position. Null if config.yml has an error. */
+    private SeedList readSeedList() {
+        if (!reloadConfigFile()) {
+            return null;
+        }
+        FileConfiguration config = plugin.getConfig();
+        SeedList list = new SeedList(Settings.readSeedMode(config, logger), Settings.readSeeds(config, logger), seedPosition, seedPicked);
+        followSeedMode(list.mode());
+        if (list.isEmpty() && (seedPosition != 0 || seedPicked != list.picked())) {
+            // Emptied by hand: a list written later starts at its first entry, and a pick is dropped.
+            seedPosition = 0;
+            seedPicked = list.picked();
+            save();
+        }
+        list = removeUnconsumed(list);
+        seedCount = list.size();
+        return list;
+    }
+
+    /**
+     * Uses up the entry of a run that started while config.yml had an error, with the pick it had and in the
+     * list's mode as it is now: the admin may have changed it since. This is the first read since, so it
+     * happens before the next pick.
+     */
+    private SeedList removeUnconsumed(SeedList list) {
+        SeedList.Unconsumed pending = unconsumed;
+        if (pending == null) {
+            return list;
+        }
+        unconsumed = null;
+        SeedList.Used used = list.consume(pending);
+        saveSeedList(list, used.list(), false);
+        if (used.exhausted()) {
+            announceSeedsUsedUp();
+        }
+        return used.list();
+    }
+
+    /**
+     * The entry the next run takes. While config.yml has an error the last reload is used, but not in
+     * once mode: the entry could not be removed afterwards, so every run would take it again.
+     */
+    private Optional<SeedChoice> nextListSeed() {
+        SeedList list = readSeedList();
+        if (list == null) {
+            list = seedList();
+            if (list.mode() == SeedList.Mode.ONCE) {
+                if (!list.isEmpty()) {
+                    logger.warning("config.yml has an error, so this run gets a random seed instead of one from the seed list");
+                }
+                return Optional.empty();
+            }
+        }
+        // Remember which entry it is, and the mode it was taken in: the list may be edited before the run starts.
+        seedPicked = list.pick().picked();
+        SeedList.Mode mode = list.mode();
+        return list.next().map(entry -> SeedChoice.fromList(entry, mode));
+    }
+
+    /** The list for a command that changes it. Null, after telling the sender, if config.yml has an error. */
+    private SeedList editableSeedList(CommandSender sender) {
+        SeedList list = readSeedList();
+        if (list == null) {
+            sender.sendMessage(messages.chat("config-unreadable"));
+        }
+        return list;
+    }
+
+    /**
+     * Saves a change made to a list from {@link #readSeedList()}: changed entries to config.yml, the
+     * position to state.yml. The mode is only written when it is being set, so a hand-typed value stays.
+     */
+    private void saveSeedList(SeedList before, SeedList after, boolean writeMode) {
+        seedPosition = after.position();
+        seedPicked = after.picked();
+        boolean seedsChanged = !after.seeds().equals(before.seeds());
+        if (seedsChanged || writeMode) {
+            FileConfiguration config = plugin.getConfig();
+            if (seedsChanged) {
+                config.set("seed-list.seeds", new ArrayList<>(after.seeds()));
+            }
+            if (writeMode) {
+                config.set("seed-list.mode", after.mode().configValue());
+            }
+            plugin.saveConfig();
+            reload();
+        }
+        save();
+    }
+
+    /** The run has started, so the seed it took from the list is used up. */
+    private void useListSeed(SeedChoice choice) {
+        if (!choice.fromList()) {
+            return;
+        }
+        try {
+            SeedList list = readSeedList();
+            if (list == null) {
+                // The settings are the defaults if the file was broken at startup, so go by the mode the entry
+                // was picked in (any read of config.yml keeps it current). Cycle mode only moves the position, which
+                // lives in state.yml and wraps when the list is read. A once-mode entry can't be removed now,
+                // so it is remembered with its pick and used up when config.yml can be read again.
+                SeedList.Mode mode = choice.listMode() != null ? choice.listMode() : settings.seedMode();
+                SeedList.Deferred deferred = SeedList.defer(mode, choice.listEntry(), seedPicked, seedPosition);
+                seedPosition = deferred.position();
+                if (deferred.unconsumed() != null) {
+                    unconsumed = deferred.unconsumed();
+                    logger.warning("config.yml has an error, so seed " + choice.listEntry() + " of run #" + machine.runNumber()
+                            + " stays in the seed list until the file is fixed");
+                }
+                seedPicked = -1;
+                save();
+                return;
+            }
+            SeedList.Used used = list.consume(choice.listEntry());
+            saveSeedList(list, used.list(), false);
+            if (used.exhausted()) {
+                announceSeedsUsedUp();
+            }
+        } catch (RuntimeException e) {
+            // The run is already going; a problem with the list must not stop it.
+            logger.log(java.util.logging.Level.WARNING, "Could not update the seed list after starting run #" + machine.runNumber(), e);
+        }
+    }
+
+    private void announceSeedsUsedUp() {
+        Component message = messages.chat("seeds-used-up");
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            if (player.hasPermission(HardcoreChallengePlugin.PERMISSION_ADMIN)) {
+                player.sendMessage(message);
+            }
+        }
+        Bukkit.getConsoleSender().sendMessage(message);
+    }
+
+    /** Number of seeds in the list the last time it was read, for tab completion. Does not read config.yml. */
+    public int seedCount() {
+        return seedCount;
+    }
+
+    /** /hcc seeds */
+    public void sendSeeds(CommandSender sender) {
+        SeedList list = readSeedList();
+        if (list == null) {
+            sender.sendMessage(messages.chat("seeds-config-error"));
+            return;
+        }
+        TagResolver mode = Placeholder.unparsed("mode", list.mode().configValue());
+        if (list.isEmpty()) {
+            sender.sendMessage(messages.chat("seeds-empty", mode));
+            return;
+        }
+        sender.sendMessage(messages.chat("seeds-header", mode, Placeholder.unparsed("count", String.valueOf(list.size()))));
+        for (int i = 0; i < list.size(); i++) {
+            sender.sendMessage(messages.plain(i == list.nextIndex() ? "seeds-line-next" : "seeds-line",
+                    Placeholder.unparsed("number", String.valueOf(i + 1)),
+                    Placeholder.unparsed("seed", list.seeds().get(i))));
+        }
+    }
+
+    /** /hcc seeds add <seed> */
+    public void addSeed(CommandSender sender, String raw) {
+        String entry = raw.trim();
+        if (entry.isEmpty()) {
+            sender.sendMessage(messages.chat("seeds-add-blank"));
+            return;
+        }
+        SeedList list = editableSeedList(sender);
+        if (list == null) {
+            return;
+        }
+        saveSeedList(list, list.add(entry), false);
+        sender.sendMessage(messages.chat("seeds-added",
+                Placeholder.unparsed("seed", entry),
+                Placeholder.unparsed("number", String.valueOf(list.size() + 1))));
+    }
+
+    /** /hcc seeds remove <number> (1-based, as shown by /hcc seeds) */
+    public void removeSeed(CommandSender sender, int number) {
+        SeedList list = editableSeedList(sender);
+        if (list == null) {
+            return;
+        }
+        if (number < 1 || number > list.size()) {
+            sender.sendMessage(messages.chat("seeds-remove-invalid",
+                    Placeholder.unparsed("number", String.valueOf(number)),
+                    Placeholder.unparsed("count", String.valueOf(list.size()))));
+            return;
+        }
+        String entry = list.seeds().get(number - 1);
+        saveSeedList(list, list.remove(number - 1), false);
+        sender.sendMessage(messages.chat("seeds-removed",
+                Placeholder.unparsed("seed", entry),
+                Placeholder.unparsed("number", String.valueOf(number))));
+    }
+
+    /** /hcc seeds clear */
+    public void clearSeeds(CommandSender sender) {
+        SeedList list = editableSeedList(sender);
+        if (list == null) {
+            return;
+        }
+        if (list.isEmpty()) {
+            sender.sendMessage(messages.chat("seeds-empty", Placeholder.unparsed("mode", list.mode().configValue())));
+            return;
+        }
+        saveSeedList(list, list.clear(), false);
+        sender.sendMessage(messages.chat("seeds-cleared", Placeholder.unparsed("count", String.valueOf(list.size()))));
+    }
+
+    /** /hcc seeds mode <once|cycle> */
+    public void setSeedMode(CommandSender sender, SeedList.Mode mode) {
+        SeedList list = editableSeedList(sender);
+        if (list == null) {
+            return;
+        }
+        // A reset in progress took its entry in the old mode; the run that starts goes by the new one.
+        followSeedMode(mode);
+        saveSeedList(list, list.withMode(mode), true);
+        sender.sendMessage(messages.chat("seeds-mode-" + mode.configValue()));
     }
 
     // ===================================================================== revive
@@ -1553,7 +1859,7 @@ public final class ChallengeManager {
         final List<String> oldPaths;
         final int newRun;
         final String reason;
-        final SeedChoice choice;
+        SeedChoice choice;
         long deadlineMillis;
         int lastShownSecond = -1;
         long lastPreparingMillis;

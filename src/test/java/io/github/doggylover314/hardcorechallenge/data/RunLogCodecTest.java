@@ -70,6 +70,31 @@ class RunLogCodecTest {
     }
 
     @Test
+    void seedListRunsStayMarked() {
+        RunLog run = new RunLog(10, 5L, "hcc_run_10", 0L, null, false, true);
+        assertTrue(RunLogCodec.encode(run).containsKey("seed-list"));
+        RunLog copy = RunLogCodec.decode((Map<?, ?>) new Yaml().load(new Yaml().dump(RunLogCodec.encode(run))));
+        assertTrue(copy.seedList());
+        assertFalse(copy.customSeed());
+        assertNull(copy.replayOf());
+    }
+
+    @Test
+    void otherRunsAreNotMarkedAsSeedList() {
+        assertFalse(finishedRun().seedList());
+        assertFalse(RunLogCodec.encode(finishedRun()).containsKey("seed-list"));
+        assertFalse(RunLogCodec.decode(RunLogCodec.encode(finishedRun())).seedList());
+        assertFalse(RunLogCodec.decode(RunLogCodec.encode(new RunLog(8, 1L, "hcc_run_8", 0L, null, true))).seedList());
+    }
+
+    @Test
+    void runFilesFromBeforeTheSeedListHaveNoMarker() {
+        Map<String, Object> map = RunLogCodec.encode(finishedRun());
+        map.remove("seed-list");
+        assertFalse(RunLogCodec.decode(map).seedList());
+    }
+
+    @Test
     void liveCheckpointSurvivesTheRoundTrip() {
         RunLog live = new RunLog(9, 1L, "hcc_run_9", 100L, null, false);
         live.checkpoint(45_000L, 145_000L);

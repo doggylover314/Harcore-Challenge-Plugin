@@ -22,6 +22,7 @@ public final class RunLog {
     private final long startedAt;
     private final Integer replayOf;
     private final boolean customSeed;
+    private final boolean seedList;
 
     private final Map<UUID, String> participants = new LinkedHashMap<>();
     private final List<TimelineEvent> timeline = new ArrayList<>();
@@ -42,14 +43,20 @@ public final class RunLog {
     /**
      * @param replayOf   run whose seed this run reuses, or {@code null}
      * @param customSeed whether an admin picked the seed
+     * @param seedList   whether the seed came from the admin's seed list
      */
-    public RunLog(int runNumber, long seed, String worldName, long startedAt, Integer replayOf, boolean customSeed) {
+    public RunLog(int runNumber, long seed, String worldName, long startedAt, Integer replayOf, boolean customSeed, boolean seedList) {
         this.runNumber = runNumber;
         this.seed = seed;
         this.worldName = worldName;
         this.startedAt = startedAt;
         this.replayOf = replayOf;
         this.customSeed = customSeed;
+        this.seedList = seedList;
+    }
+
+    public RunLog(int runNumber, long seed, String worldName, long startedAt, Integer replayOf, boolean customSeed) {
+        this(runNumber, seed, worldName, startedAt, replayOf, customSeed, false);
     }
 
     // ------------------------------------------------------------------ recording
@@ -206,6 +213,10 @@ public final class RunLog {
 
     public boolean customSeed() {
         return customSeed;
+    }
+
+    public boolean seedList() {
+        return seedList;
     }
 
     public Map<UUID, String> participants() {

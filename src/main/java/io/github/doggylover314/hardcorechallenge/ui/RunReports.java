@@ -93,6 +93,8 @@ public final class RunReports {
             origin = m.raw("run-origin-replay").replace("<of>", String.valueOf(run.replayOf()));
         } else if (run.customSeed()) {
             origin = m.raw("run-origin-custom");
+        } else if (run.seedList()) {
+            origin = m.raw("run-origin-list");
         }
         sender.sendMessage(m.plain("run-seed",
                         Placeholder.unparsed("seed", String.valueOf(run.seed())),

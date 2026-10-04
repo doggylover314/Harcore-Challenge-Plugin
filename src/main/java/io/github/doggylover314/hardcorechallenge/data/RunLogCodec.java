@@ -33,6 +33,9 @@ public final class RunLogCodec {
         if (run.customSeed()) {
             map.put("custom-seed", true);
         }
+        if (run.seedList()) {
+            map.put("seed-list", true);
+        }
         map.put("outcome", run.outcome() == null ? "live" : run.outcome().name().toLowerCase(Locale.ROOT));
         map.put("ended-at", run.endedAt());
         map.put("duration-millis", run.durationMillis());
@@ -113,7 +116,8 @@ public final class RunLogCodec {
                 asString(map.get("world")),
                 asLong(map.get("started-at")),
                 replay == null ? null : (int) asLong(replay),
-                Boolean.TRUE.equals(map.get("custom-seed")));
+                Boolean.TRUE.equals(map.get("custom-seed")),
+                Boolean.TRUE.equals(map.get("seed-list")));
 
         if (map.get("participants") instanceof Map<?, ?> participants) {
             participants.forEach((id, name) -> run.addParticipant(UUID.fromString(id.toString()), String.valueOf(name)));

@@ -21,6 +21,9 @@ public final class HardcoreChallengePlugin extends JavaPlugin {
         saveDefaultConfig();
         // Missing keys fall back to the bundled defaults.
         getConfig().options().copyDefaults(true);
+        if (!Settings.isReadable(getDataPath().resolve("config.yml"), getLogger())) {
+            getLogger().warning("config.yml has an error, so the default settings are in use. Fix the file and run /hcc reload.");
+        }
 
         Settings settings = Settings.load(getConfig(), getLogger());
         Messages messages = new Messages(getConfig(), getLogger());
