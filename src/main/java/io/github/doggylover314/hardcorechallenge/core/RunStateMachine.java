@@ -18,6 +18,7 @@ import java.util.function.LongSupplier;
  *                                ├──────────────────────┘ ▼
  *                                └──────beginTransition── VICTORY
  *   any ──stop──▶ IDLE
+ *   RESETTING or IDLE ──continueRun──▶ RUNNING (same run, nothing reset)
  * </pre>
  *
  * <p>Deaths do not end the run immediately. They are held as pending and only resolve into a
@@ -120,6 +121,30 @@ public final class RunStateMachine {
         clock.reset(0);
         clock.start();
         phase = RunPhase.RUNNING;
+    }
+
+    /**
+     * Whether the run that just ended can go on: there is a run, it is between runs or stopped, and it
+     * has not been won.
+     */
+    public boolean canContinue() {
+        return runNumber > 0 && (phase == RunPhase.RESETTING || phase == RunPhase.IDLE) && !victoryConditionMet();
+    }
+
+    /**
+     * Puts the run that just ended back to {@link RunPhase#RUNNING} without resetting anything: run number,
+     * world, seed, boss kills and run time stay. The clock stays stopped until {@link #resumeClock()}.
+     *
+     * @return false if the run cannot be continued (see {@link #canContinue()})
+     */
+    public boolean continueRun() {
+        if (!canContinue()) {
+            return false;
+        }
+        clock.stop();
+        pendingDeath = null;
+        phase = RunPhase.RUNNING;
+        return true;
     }
 
     /**

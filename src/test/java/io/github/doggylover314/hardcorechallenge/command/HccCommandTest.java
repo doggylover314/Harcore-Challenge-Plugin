@@ -82,4 +82,16 @@ class HccCommandTest {
         assertThrows(CommandSyntaxException.class, () -> dispatcher.execute("hcc seeds", source(false)));
         assertThrows(CommandSyntaxException.class, () -> dispatcher.execute("hcc seeds add 1", source(false)));
     }
+
+    @Test
+    void continueTakesNoArgumentsAndIsAdminOnly() throws CommandSyntaxException {
+        assertEquals(0, run("hcc continue"), "0 = the manager is missing, which is as far as it can go here");
+        assertThrows(CommandSyntaxException.class, () -> run("hcc continue now"));
+        assertThrows(CommandSyntaxException.class, () -> dispatcher.execute("hcc continue", source(false)));
+    }
+
+    @Test
+    void continueIsSuggested() {
+        assertEquals(List.of("continue"), suggestions("hcc con"));
+    }
 }

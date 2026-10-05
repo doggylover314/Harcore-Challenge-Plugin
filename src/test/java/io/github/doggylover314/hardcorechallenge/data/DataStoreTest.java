@@ -2,18 +2,24 @@ package io.github.doggylover314.hardcorechallenge.data;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.doggylover314.hardcorechallenge.core.Restore;
 import io.github.doggylover314.hardcorechallenge.core.Roster;
+import io.github.doggylover314.hardcorechallenge.core.RunEnd;
 import io.github.doggylover314.hardcorechallenge.core.RunPhase;
 import io.github.doggylover314.hardcorechallenge.core.RunSnapshot;
 import io.github.doggylover314.hardcorechallenge.core.SeedChoice;
 import io.github.doggylover314.hardcorechallenge.core.SeedList;
+import io.github.doggylover314.hardcorechallenge.core.Spot;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import java.util.logging.Logger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -203,5 +209,138 @@ class DataStoreTest {
         assertEquals(-1, loaded.seedPicked());
         assertNull(loaded.unconsumedSeed());
         assertFalse(loaded.unreadable());
+    }
+
+    private DataStore.PersistedState withRunEnd(RunEnd end) {
+        RunSnapshot run = new RunSnapshot(RunPhase.IDLE, 3, "hcc_run_3", 99L, 1000L, 5000L, List.of());
+        return new DataStore.PersistedState(run, List.of("hcc_run_3"), new Roster(), null, 0, -1, null, false, end);
+    }
+
+    @Test
+    void whatIsNeededToContinueARunSurvivesARestart(@TempDir Path folder) {
+        UUID dead = UUID.randomUUID();
+        UUID firstDeath = UUID.randomUUID();
+        UUID alive = UUID.randomUUID();
+        UUID offline = UUID.randomUUID();
+        UUID bare = UUID.randomUUID();
+        RunEnd end = new RunEnd();
+        end.recordDeath(dead, Restore.dead(new Spot("hcc_run_3_nether", 10.5, 70.0, -3.25, 90.5f, -12.25f),
+                Map.of(0, "AAEC", 36, "Zm9v", 40, "YmFy"), 1395, "3:" + dead + ":1700000000000"));
+        end.recordDeath(firstDeath, Restore.dead(new Spot("hcc_run_3", 1, 2, 3, 0f, 0f), null, 0));
+        end.recordDeath(bare, Restore.dead(null, Map.of(), 0));
+        end.recordPosition(alive, new Spot("hcc_run_3_the_end", -100.5, 49.0, 7.0, 180f, 30f));
+        end.putPending(offline, Restore.alive(null));
+        end.putPending(dead, Restore.dead(new Spot("hcc_run_3", 5, 6, 7, 1f, 2f), Map.of(3, "Zm9v"), 7));
+
+        RunEnd loaded = roundTrip(folder, withRunEnd(end)).runEnd();
+
+        assertFalse(loaded.startedOver());
+        assertEquals("3:" + dead + ":1700000000000", loaded.deaths().get(dead).dropTag());
+        assertNull(loaded.deaths().get(firstDeath).dropTag());
+        assertEquals(end.deaths(), loaded.deaths());
+        assertEquals(end.positions(), loaded.positions());
+        assertEquals(end.pending(), loaded.pending());
+        assertTrue(loaded.deaths().get(dead).hasItems());
+        assertEquals("Zm9v", loaded.deaths().get(dead).items().get(36));
+        assertEquals(1395, loaded.deaths().get(dead).experience());
+        assertFalse(loaded.deaths().get(firstDeath).hasItems(), "first-death: only the spot is kept");
+        assertTrue(loaded.deaths().get(bare).hasItems(), "an empty inventory is not the same as none");
+        assertTrue(loaded.deaths().get(bare).items().isEmpty());
+        assertNull(loaded.deaths().get(bare).spot());
+        assertFalse(loaded.pending().get(offline).revive());
+        assertNull(loaded.pending().get(offline).spot());
+    }
+
+    @Test
+    void clearedDropsSurviveARestart(@TempDir Path folder) {
+        RunEnd end = new RunEnd();
+        end.addClearedDrop("3:" + UUID.randomUUID() + ":1700000000000");
+        end.addClearedDrop("3:" + UUID.randomUUID() + ":1700000000500");
+        RunEnd loaded = roundTrip(folder, withRunEnd(end)).runEnd();
+        assertEquals(end.clearedDrops(), loaded.clearedDrops());
+        assertEquals(2, loaded.clearedDrops().size());
+        assertFalse(loaded.isEmpty());
+    }
+
+    @Test
+    void aRunEndWithoutClearedDropsLoadsWithNone(@TempDir Path folder) throws IOException {
+        Files.writeString(folder.resolve("state.yml"), """
+                phase: IDLE
+                run-end:
+                  started-over: true
+                """);
+        DataStore store = new DataStore(folder, logger);
+        RunEnd end = store.loadState().runEnd();
+        store.shutdown();
+        assertTrue(end.startedOver());
+        assertTrue(end.clearedDrops().isEmpty());
+    }
+
+    @Test
+    void startingOverSurvivesARestart(@TempDir Path folder) {
+        RunEnd end = new RunEnd();
+        end.markStartedOver();
+        RunEnd loaded = roundTrip(folder, withRunEnd(end)).runEnd();
+        assertTrue(loaded.startedOver());
+        assertFalse(loaded.isEmpty());
+    }
+
+    @Test
+    void anEmptyRunEndIsNotSaved(@TempDir Path folder) throws IOException {
+        DataStore.PersistedState loaded = roundTrip(folder, withRunEnd(new RunEnd()));
+        assertTrue(loaded.runEnd().isEmpty());
+        assertFalse(Files.readString(folder.resolve("state.yml")).contains("run-end"));
+    }
+
+    @Test
+    void aStateFileFromBeforeRunEndLoadsWithNone(@TempDir Path folder) throws IOException {
+        Files.writeString(folder.resolve("state.yml"), """
+                phase: IDLE
+                run-number: 4
+                world: hcc_run_4
+                eliminated: []
+                """);
+        DataStore store = new DataStore(folder, logger);
+        DataStore.PersistedState loaded = store.loadState();
+        store.shutdown();
+
+        assertEquals(4, loaded.run().runNumber());
+        assertNotNull(loaded.runEnd());
+        assertTrue(loaded.runEnd().isEmpty());
+    }
+
+    @Test
+    void brokenEntriesInTheRunEndAreSkipped(@TempDir Path folder) throws IOException {
+        UUID good = UUID.randomUUID();
+        Files.writeString(folder.resolve("state.yml"), """
+                phase: IDLE
+                run-end:
+                  deaths:
+                    not-a-uuid:
+                      world: hcc_run_4
+                    %s:
+                      world: hcc_run_4
+                      x: 1.5
+                      y: 2.0
+                      z: 3.5
+                      items:
+                        '0': Zm9v
+                        bad: YmFy
+                      experience: 12
+                  positions:
+                    %s:
+                      x: 1.0
+                """.formatted(good, UUID.randomUUID()));
+        DataStore store = new DataStore(folder, logger);
+        RunEnd end = store.loadState().runEnd();
+        store.shutdown();
+
+        assertEquals(1, end.deaths().size());
+        Restore death = end.deaths().get(good);
+        assertEquals(new Spot("hcc_run_4", 1.5, 2.0, 3.5, 0f, 0f), death.spot());
+        assertEquals(Map.of(0, "Zm9v"), death.items());
+        assertEquals(12, death.experience());
+        assertTrue(death.revive());
+        assertTrue(end.positions().isEmpty(), "a position without a world is dropped");
     }
 }

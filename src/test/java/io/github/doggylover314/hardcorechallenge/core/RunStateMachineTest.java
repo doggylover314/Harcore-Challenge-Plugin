@@ -349,6 +349,150 @@ class RunStateMachineTest {
     }
 
     @Nested
+    class Continuing {
+        private void endByDeath() {
+            machine.reportDeath(death("Steve"), 1);
+            machine.resolvePendingDeath(2);
+        }
+
+        @Test
+        void aRunThatEndedInADeathGoesOnWhileResetting() {
+            startRun(4);
+            advance(60_000);
+            machine.reportBossKill(Boss.WITHER, 1);
+            endByDeath();
+            advance(10_000);
+            assertEquals(RunPhase.RESETTING, machine.phase());
+
+            assertTrue(machine.canContinue());
+            assertTrue(machine.continueRun());
+            assertEquals(RunPhase.RUNNING, machine.phase());
+            assertEquals(4, machine.runNumber());
+            assertEquals("hcc_run_4", machine.worldName());
+            assertEquals(1004L, machine.seed());
+            assertTrue(machine.hasKilled(Boss.WITHER));
+            assertEquals(60_000L, machine.elapsedMillis(), "the reset countdown is not run time");
+        }
+
+        @Test
+        void aStoppedRunGoesOn() {
+            startRun(2);
+            advance(30_000);
+            machine.stop();
+            assertEquals(RunPhase.IDLE, machine.phase());
+
+            assertTrue(machine.continueRun());
+            assertEquals(RunPhase.RUNNING, machine.phase());
+            assertEquals(2, machine.runNumber());
+            assertEquals(30_000L, machine.elapsedMillis());
+        }
+
+        @Test
+        void theClockStaysStoppedUntilItIsResumed() {
+            startRun(2);
+            advance(30_000);
+            machine.stop();
+            machine.continueRun();
+            advance(5_000);
+            assertFalse(machine.clockRunning());
+            assertEquals(30_000L, machine.elapsedMillis());
+
+            machine.resumeClock();
+            advance(5_000);
+            assertEquals(35_000L, machine.elapsedMillis());
+        }
+
+        @Test
+        void continuingKeepsTheStartTime() {
+            startRun(2);
+            long startedAt = machine.startedAt();
+            advance(30_000);
+            endByDeath();
+            machine.continueRun();
+            assertEquals(startedAt, machine.startedAt());
+        }
+
+        @Test
+        void aRunCanEndAgainAfterContinuing() {
+            startRun(2);
+            endByDeath();
+            machine.continueRun();
+            assertEquals(RunStateMachine.DeathResult.PENDING, machine.reportDeath(death("Alex"), 10));
+            assertEquals("Alex", machine.resolvePendingDeath(11).orElseThrow().playerName());
+            assertEquals(RunPhase.RESETTING, machine.phase());
+            assertTrue(machine.continueRun());
+        }
+
+        @Test
+        void aRunThatIsBeingPlayedCannotBeContinued() {
+            startRun(1);
+            assertFalse(machine.canContinue());
+            assertFalse(machine.continueRun());
+            assertEquals(RunPhase.RUNNING, machine.phase());
+        }
+
+        @Test
+        void thereIsNothingToContinueWithoutARun() {
+            assertFalse(machine.canContinue());
+            assertFalse(machine.continueRun());
+            assertEquals(RunPhase.IDLE, machine.phase());
+            machine.beginTransition();
+            assertFalse(machine.continueRun(), "run number 0");
+            assertEquals(RunPhase.RESETTING, machine.phase());
+        }
+
+        @Test
+        void aWonRunCannotBeContinued() {
+            machine.configure(List.of(Boss.WITHER), true, true);
+            startRun(1);
+            machine.reportBossKill(Boss.WITHER, 1);
+            assertEquals(RunPhase.VICTORY, machine.phase());
+            assertFalse(machine.continueRun());
+
+            machine.beginTransition();
+            assertFalse(machine.canContinue(), "reset after the victory");
+            machine.stop();
+            assertFalse(machine.continueRun(), "stopped after the victory");
+            assertEquals(RunPhase.IDLE, machine.phase());
+        }
+
+        @Test
+        void bossesKilledWithVictoryTurnedOffDoNotBlockIt() {
+            machine.configure(List.of(Boss.WITHER), true, false);
+            startRun(1);
+            machine.reportBossKill(Boss.WITHER, 1);
+            endByDeath();
+            assertTrue(machine.continueRun());
+            assertTrue(machine.hasKilled(Boss.WITHER));
+        }
+
+        @Test
+        void aRestoredResettingRunCanContinue() {
+            startRun(5);
+            advance(20_000);
+            endByDeath();
+            RunSnapshot snapshot = machine.snapshot();
+
+            RunStateMachine restored = new RunStateMachine(runClock::get, wallClock::get);
+            restored.configure(EnumSet.allOf(Boss.class), true, true);
+            restored.restore(snapshot);
+            assertTrue(restored.continueRun());
+            assertEquals(5, restored.runNumber());
+            assertEquals(20_000L, restored.elapsedMillis());
+        }
+
+        @Test
+        void aPendingDeathIsDroppedWhenStopped() {
+            startRun(1);
+            machine.reportDeath(death("Steve"), 5);
+            machine.stop();
+            assertTrue(machine.continueRun());
+            assertFalse(machine.hasPendingDeath());
+            assertTrue(machine.resolvePendingDeath(100).isEmpty());
+        }
+    }
+
+    @Nested
     class Persistence {
         @Test
         void snapshotRoundTripResumesTheRun() {

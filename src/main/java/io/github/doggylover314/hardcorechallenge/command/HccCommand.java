@@ -83,6 +83,9 @@ public final class HccCommand {
                                 .suggests((ctx, builder) -> suggestEliminated(builder, manager))
                                 .executes(ctx -> run(ctx, manager, (m, sender) ->
                                         m.revive(sender, StringArgumentType.getString(ctx, "player"))))))
+                .then(Commands.literal("continue")
+                        .requires(HccCommand::isAdmin)
+                        .executes(ctx -> run(ctx, manager, ChallengeManager::continueRun)))
                 .then(Commands.literal("resetwhen")
                         .requires(HccCommand::isAdmin)
                         .then(Commands.argument("rule", StringArgumentType.greedyString())

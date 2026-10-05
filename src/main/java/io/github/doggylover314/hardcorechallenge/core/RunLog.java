@@ -110,6 +110,30 @@ public final class RunLog {
         this.reason = reason;
     }
 
+    /**
+     * Makes a finished log live again, for a run that goes on after it ended: drops the RUN_ENDED event and
+     * clears how it ended. Every other event stays.
+     *
+     * @return false if the log was already live
+     */
+    public boolean reopen() {
+        if (isLive()) {
+            return false;
+        }
+        for (int i = timeline.size() - 1; i >= 0; i--) {
+            if (timeline.get(i).type() == TimelineEvent.Type.RUN_ENDED) {
+                timeline.remove(i);
+                break;
+            }
+        }
+        outcome = null;
+        endedAt = 0L;
+        durationMillis = 0L;
+        death = null;
+        reason = null;
+        return true;
+    }
+
     /** Notes how far the run had got when the live log was last saved. */
     public void checkpoint(long elapsedMillis, long at) {
         this.checkpointMillis = elapsedMillis;

@@ -116,4 +116,29 @@ class RunLogCodecTest {
         ((java.util.List<Map<String, Object>>) map.get("timeline")).getFirst().put("type", "from_the_future");
         assertEquals(0, RunLogCodec.decode(map).timeline().size());
     }
+
+    @Test
+    void aReopenedLogIsSavedAndLoadedAsALiveRun() {
+        RunLog run = finishedRun();
+        run.event(new TimelineEvent(89_000, 1_700_000_089_000L, TimelineEvent.Type.DEATH, "Steve", "lava"));
+        run.event(new TimelineEvent(90_000, 1_700_000_090_000L, TimelineEvent.Type.RUN_ENDED, null, "death"));
+        run.reopen();
+        run.checkpoint(95_000, 1_700_000_095_000L);
+
+        Map<String, Object> encoded = RunLogCodec.encode(run);
+        assertEquals("live", encoded.get("outcome"));
+        assertFalse(encoded.containsKey("death"));
+        assertFalse(encoded.containsKey("reason"));
+
+        RunLog copy = RunLogCodec.decode((Map<?, ?>) new Yaml().load(new Yaml().dump(encoded)));
+        assertTrue(copy.isLive());
+        assertNull(copy.outcome());
+        assertNull(copy.death());
+        assertEquals(0L, copy.durationMillis());
+        assertEquals(95_000L, copy.checkpointMillis());
+        assertEquals(2, copy.timeline().size());
+        assertEquals(TimelineEvent.Type.DEATH, copy.timeline().getLast().type());
+        assertEquals("Steve", copy.participants().get(steve));
+        assertEquals(1, copy.bossKills().size());
+    }
 }

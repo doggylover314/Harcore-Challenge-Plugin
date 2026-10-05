@@ -78,4 +78,19 @@ class MessagesTest {
         assertTrue(text(messages.plain("help")).contains("/hcc seeds [add <seed> | remove <number> | clear | mode <once|cycle>]"));
         assertFalse(text(messages.plain("help-player")).contains("seeds"));
     }
+
+    @Test
+    void continueIsAnnouncedWithTheAdminAndTheRun() {
+        assertEquals("Alex brought run #7 back to life. Everyone is back in it.", text(messages.plain("continued",
+                Placeholder.unparsed("player", "Alex"), Placeholder.unparsed("run", "7"))));
+        assertEquals("The worlds of run #7 could not be loaded, so it can't be continued. See the console.",
+                text(messages.plain("continue-worlds-failed", Placeholder.unparsed("run", "7"))));
+        assertTrue(text(messages.plain("continue-unavailable")).startsWith("/hcc continue only works"));
+    }
+
+    @Test
+    void onlyTheAdminHelpMentionsContinue() {
+        assertTrue(text(messages.plain("help")).contains("/hcc continue"));
+        assertFalse(text(messages.plain("help-player")).contains("continue"));
+    }
 }

@@ -2,11 +2,14 @@ package io.github.doggylover314.hardcorechallenge.data;
 
 import io.github.doggylover314.hardcorechallenge.core.Boss;
 import io.github.doggylover314.hardcorechallenge.core.BossKill;
+import io.github.doggylover314.hardcorechallenge.core.Restore;
 import io.github.doggylover314.hardcorechallenge.core.Roster;
+import io.github.doggylover314.hardcorechallenge.core.RunEnd;
 import io.github.doggylover314.hardcorechallenge.core.RunPhase;
 import io.github.doggylover314.hardcorechallenge.core.RunSnapshot;
 import io.github.doggylover314.hardcorechallenge.core.SeedChoice;
 import io.github.doggylover314.hardcorechallenge.core.SeedList;
+import io.github.doggylover314.hardcorechallenge.core.Spot;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -20,6 +23,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -72,24 +76,36 @@ public final class DataStore {
      *                     not be used up yet, with the pick it had; null if none
      * @param unreadable   state.yml exists but could not be parsed; everything else is then an empty
      *                     initial state that must not be acted on or saved over the file
+     * @param runEnd       what is needed to continue a run that ended (deaths, positions, restores still to give);
+     *                     empty if state.yml has none
      */
     public record PersistedState(RunSnapshot run, List<String> worldPaths, Roster roster, SeedChoice pendingSeed,
-                                 int seedPosition, int seedPicked, SeedList.Unconsumed unconsumedSeed, boolean unreadable) {
+                                 int seedPosition, int seedPicked, SeedList.Unconsumed unconsumedSeed, boolean unreadable,
+                                 RunEnd runEnd) {
+        public PersistedState {
+            runEnd = runEnd == null ? new RunEnd() : runEnd;
+        }
+
+        public PersistedState(RunSnapshot run, List<String> worldPaths, Roster roster, SeedChoice pendingSeed,
+                              int seedPosition, int seedPicked, SeedList.Unconsumed unconsumedSeed, boolean unreadable) {
+            this(run, worldPaths, roster, pendingSeed, seedPosition, seedPicked, unconsumedSeed, unreadable, null);
+        }
+
         public PersistedState(RunSnapshot run, List<String> worldPaths, Roster roster, SeedChoice pendingSeed,
                               int seedPosition, int seedPicked, SeedList.Unconsumed unconsumedSeed) {
-            this(run, worldPaths, roster, pendingSeed, seedPosition, seedPicked, unconsumedSeed, false);
+            this(run, worldPaths, roster, pendingSeed, seedPosition, seedPicked, unconsumedSeed, false, null);
         }
 
         public PersistedState(RunSnapshot run, List<String> worldPaths, Roster roster, SeedChoice pendingSeed, int seedPosition) {
-            this(run, worldPaths, roster, pendingSeed, seedPosition, -1, null, false);
+            this(run, worldPaths, roster, pendingSeed, seedPosition, -1, null, false, null);
         }
 
         public PersistedState(RunSnapshot run, List<String> worldPaths, Roster roster, SeedChoice pendingSeed) {
-            this(run, worldPaths, roster, pendingSeed, 0, -1, null, false);
+            this(run, worldPaths, roster, pendingSeed, 0, -1, null, false, null);
         }
 
         public PersistedState(RunSnapshot run, List<String> worldPaths, Roster roster) {
-            this(run, worldPaths, roster, null, 0, -1, null, false);
+            this(run, worldPaths, roster, null, 0, -1, null, false, null);
         }
     }
 
@@ -97,7 +113,7 @@ public final class DataStore {
         Roster roster = new Roster();
         YamlConfiguration yaml = read(stateFile);
         if (yaml == null) {
-            return new PersistedState(RunSnapshot.initial(), List.of(), roster, null, 0, -1, null, Files.isRegularFile(stateFile));
+            return new PersistedState(RunSnapshot.initial(), List.of(), roster, null, 0, -1, null, Files.isRegularFile(stateFile), null);
         }
 
         RunPhase phase;
@@ -144,7 +160,79 @@ public final class DataStore {
             });
         }
         return new PersistedState(run, yaml.getStringList("world-paths"), roster, readPendingSeed(yaml),
-                Math.max(0, yaml.getInt("seed-position", 0)), readPick(yaml.getInt("seed-picked", -1)), readUnconsumed(yaml));
+                Math.max(0, yaml.getInt("seed-position", 0)), readPick(yaml.getInt("seed-picked", -1)), readUnconsumed(yaml),
+                false, readRunEnd(yaml.getConfigurationSection("run-end")));
+    }
+
+    private static RunEnd readRunEnd(ConfigurationSection section) {
+        RunEnd end = new RunEnd();
+        if (section == null) {
+            return end;
+        }
+        if (section.getBoolean("started-over", false)) {
+            end.markStartedOver();
+        }
+        ConfigurationSection deaths = section.getConfigurationSection("deaths");
+        if (deaths != null) {
+            for (String key : deaths.getKeys(false)) {
+                ConfigurationSection death = deaths.getConfigurationSection(key);
+                if (death != null) {
+                    parseUuid(key).ifPresent(id -> end.recordDeath(id, readRestore(death)));
+                }
+            }
+        }
+        ConfigurationSection positions = section.getConfigurationSection("positions");
+        if (positions != null) {
+            for (String key : positions.getKeys(false)) {
+                ConfigurationSection position = positions.getConfigurationSection(key);
+                Spot spot = position == null ? null : readSpot(position);
+                if (spot != null) {
+                    parseUuid(key).ifPresent(id -> end.recordPosition(id, spot));
+                }
+            }
+        }
+        ConfigurationSection pending = section.getConfigurationSection("pending");
+        if (pending != null) {
+            for (String key : pending.getKeys(false)) {
+                ConfigurationSection restore = pending.getConfigurationSection(key);
+                if (restore != null) {
+                    parseUuid(key).ifPresent(id -> end.putPending(id, readRestore(restore)));
+                }
+            }
+        }
+        for (String tag : section.getStringList("cleared-drops")) {
+            end.addClearedDrop(tag);
+        }
+        return end;
+    }
+
+    private static Restore readRestore(ConfigurationSection section) {
+        Map<Integer, String> items = null;
+        ConfigurationSection saved = section.getConfigurationSection("items");
+        if (saved != null) {
+            items = new TreeMap<>();
+            for (String key : saved.getKeys(false)) {
+                String item = saved.getString(key);
+                try {
+                    if (item != null) {
+                        items.put(Integer.parseInt(key), item);
+                    }
+                } catch (NumberFormatException ignored) {
+                    // Not a slot; skip it.
+                }
+            }
+        }
+        return new Restore(readSpot(section), items, section.getInt("experience", 0), section.getBoolean("revive", true),
+                section.getString("drop-tag"));
+    }
+
+    private static Spot readSpot(ConfigurationSection section) {
+        String world = section.getString("world");
+        if (world == null) {
+            return null;
+        }
+        return new Spot(world, section.getDouble("x"), section.getDouble("y"), section.getDouble("z"),
+                (float) section.getDouble("yaw"), (float) section.getDouble("pitch"));
     }
 
     private static SeedList.Unconsumed readUnconsumed(YamlConfiguration yaml) {
@@ -236,7 +324,63 @@ public final class DataStore {
         Map<String, Object> synced = new LinkedHashMap<>();
         roster.syncedRuns().forEach((id, runNumber) -> synced.put(id.toString(), runNumber));
         yaml.createSection("synced-run", synced);
+        writeRunEnd(yaml, state.runEnd());
         return yaml.saveToString();
+    }
+
+    private static void writeRunEnd(YamlConfiguration yaml, RunEnd end) {
+        if (end.isEmpty()) {
+            return;
+        }
+        Map<String, Object> section = new LinkedHashMap<>();
+        if (end.startedOver()) {
+            section.put("started-over", true);
+        }
+        if (!end.deaths().isEmpty()) {
+            Map<String, Object> deaths = new LinkedHashMap<>();
+            end.deaths().forEach((id, death) -> deaths.put(id.toString(), restoreMap(death)));
+            section.put("deaths", deaths);
+        }
+        if (!end.positions().isEmpty()) {
+            Map<String, Object> positions = new LinkedHashMap<>();
+            end.positions().forEach((id, spot) -> positions.put(id.toString(), spotMap(spot)));
+            section.put("positions", positions);
+        }
+        if (!end.pending().isEmpty()) {
+            Map<String, Object> pending = new LinkedHashMap<>();
+            end.pending().forEach((id, restore) -> pending.put(id.toString(), restoreMap(restore)));
+            section.put("pending", pending);
+        }
+        if (!end.clearedDrops().isEmpty()) {
+            section.put("cleared-drops", new ArrayList<>(end.clearedDrops()));
+        }
+        yaml.createSection("run-end", section);
+    }
+
+    private static Map<String, Object> restoreMap(Restore restore) {
+        Map<String, Object> map = restore.spot() == null ? new LinkedHashMap<>() : spotMap(restore.spot());
+        if (restore.hasItems()) {
+            Map<String, Object> items = new LinkedHashMap<>();
+            restore.items().forEach((slot, item) -> items.put(String.valueOf(slot), item));
+            map.put("items", items);
+        }
+        map.put("experience", restore.experience());
+        map.put("revive", restore.revive());
+        if (restore.dropTag() != null) {
+            map.put("drop-tag", restore.dropTag());
+        }
+        return map;
+    }
+
+    private static Map<String, Object> spotMap(Spot spot) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("world", spot.world());
+        map.put("x", spot.x());
+        map.put("y", spot.y());
+        map.put("z", spot.z());
+        map.put("yaw", (double) spot.yaw());
+        map.put("pitch", (double) spot.pitch());
+        return map;
     }
 
     // ------------------------------------------------------- pending deletions

@@ -14,6 +14,7 @@ Kill the Ender Dragon, Wither, Elder Guardian and Warden in one run to win.
 - Disconnecting never ends a run; the run timer pauses while no participant is online
 - Every run is saved forever with stats, boss final hits and a timeline
 - Replay any past run's seed, or start on a seed of your choice
+- Changed your mind after a death? `/hcc continue` during the countdown revives everyone where they were, with their stuff
 - Preload a list of seeds for the next runs: play each one once, or cycle through them
 - Works behind Velocity
 
@@ -71,6 +72,7 @@ The jar ends up in `build/libs/`. Gradle downloads JDK 25 if you don't have it.
 | `/hcc seeds clear` | admin | Empty the list |
 | `/hcc seeds mode <once\|cycle>` | admin | Play each seed once (default), or cycle through the list |
 | `/hcc revive <player>` | admin | Bring back a player who is out |
+| `/hcc continue` | admin | During a reset (or after `/hcc stop`), cancel it and continue the run that ended, with everyone revived |
 | `/hcc reload` | admin | Reload the config |
 
 `/hcc history` works as an alias for `/hcc runs`. Lines in the runs list are clickable.

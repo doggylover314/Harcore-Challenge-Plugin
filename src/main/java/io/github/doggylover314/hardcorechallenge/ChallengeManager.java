@@ -7,7 +7,9 @@ import io.github.doggylover314.hardcorechallenge.core.BossKill;
 import io.github.doggylover314.hardcorechallenge.core.DeathRecord;
 import io.github.doggylover314.hardcorechallenge.core.Outcome;
 import io.github.doggylover314.hardcorechallenge.core.ResetRule;
+import io.github.doggylover314.hardcorechallenge.core.Restore;
 import io.github.doggylover314.hardcorechallenge.core.Roster;
+import io.github.doggylover314.hardcorechallenge.core.RunEnd;
 import io.github.doggylover314.hardcorechallenge.core.RunNumbers;
 import io.github.doggylover314.hardcorechallenge.core.RunRecap;
 import io.github.doggylover314.hardcorechallenge.core.RunPhase;
@@ -15,18 +17,22 @@ import io.github.doggylover314.hardcorechallenge.core.RunLog;
 import io.github.doggylover314.hardcorechallenge.core.RunQuery;
 import io.github.doggylover314.hardcorechallenge.core.TimelineEvent;
 import io.github.doggylover314.hardcorechallenge.core.RunStateMachine;
+import io.github.doggylover314.hardcorechallenge.core.SafeSpot;
 import io.github.doggylover314.hardcorechallenge.core.SeedChoice;
 import io.github.doggylover314.hardcorechallenge.core.SeedList;
 import io.github.doggylover314.hardcorechallenge.core.Seeds;
+import io.github.doggylover314.hardcorechallenge.core.Spot;
 import io.github.doggylover314.hardcorechallenge.core.TimeFormat;
 import io.github.doggylover314.hardcorechallenge.data.DataStore;
 import io.github.doggylover314.hardcorechallenge.data.RunArchive;
 import io.github.doggylover314.hardcorechallenge.tracking.RunTracker;
 import io.github.doggylover314.hardcorechallenge.ui.RunReports;
+import io.github.doggylover314.hardcorechallenge.player.InventorySnapshot;
 import io.github.doggylover314.hardcorechallenge.player.PlayerResetter;
 import io.github.doggylover314.hardcorechallenge.player.SpawnProtection;
 import io.github.doggylover314.hardcorechallenge.ui.Announcer;
 import io.github.doggylover314.hardcorechallenge.ui.Hud;
+import io.github.doggylover314.hardcorechallenge.world.BlockTerrain;
 import io.github.doggylover314.hardcorechallenge.world.RunWorlds;
 import io.github.doggylover314.hardcorechallenge.world.WorldService;
 import java.nio.file.Files;
@@ -36,11 +42,13 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -52,20 +60,24 @@ import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
+import org.bukkit.Chunk;
 import org.bukkit.Color;
 import org.bukkit.FireworkEffect;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
+import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.ExperienceOrb;
 import org.bukkit.entity.Firework;
+import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.FireworkMeta;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.scheduler.BukkitTask;
 
 /**
@@ -147,9 +159,15 @@ public final class ChallengeManager {
 
     private final SpawnProtection protection = new SpawnProtection(() -> System.nanoTime() / 1_000_000L);
 
+    /** Deaths, positions and restores that let a run that ended be continued; persisted in state.yml. */
+    private RunEnd runEnd = new RunEnd();
+    /** Marks the items and experience dropped at a death spot with the tag of that death, so continuing can remove them. */
+    private final NamespacedKey dropKey;
+
     public ChallengeManager(HardcoreChallengePlugin plugin, Settings settings, Messages messages) {
         this.plugin = plugin;
         this.logger = plugin.getLogger();
+        this.dropKey = new NamespacedKey(plugin, "death-drop");
         this.settings = settings;
         this.messages = messages;
         this.store = new DataStore(plugin.getDataPath(), logger);
@@ -170,6 +188,7 @@ public final class ChallengeManager {
 
         machine.restore(state.run());
         roster = state.roster();
+        runEnd = state.runEnd();
         currentPaths = List.copyOf(state.worldPaths());
         restoredChoice = state.pendingSeed() != null ? state.pendingSeed() : SeedChoice.RANDOM;
         configureMachine();
@@ -223,7 +242,18 @@ public final class ChallengeManager {
                 logger.info("The server stopped during a reset; starting run #" + (run + 1) + " now.");
                 SeedChoice choice = restoredChoice;
                 pendingChoice = choice;
-                Bukkit.getScheduler().runTask(plugin, () -> runTransition(reasonText("reason-restart"), choice));
+                // Keep the old worlds loaded like in a normal reset, so joins and /hcc continue find players in place.
+                RunWorlds old = run > 0 ? loadOldWorlds(run) : null;
+                if (old != null) {
+                    current = old;
+                    currentPaths = old.paths();
+                }
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    // An admin may have stopped or continued the run in the meantime.
+                    if (machine.phase() == RunPhase.RESETTING && transition == null) {
+                        runTransition(reasonText("reason-restart"), choice);
+                    }
+                });
             }
             case IDLE -> {
                 // Keep the last world around for sightseeing if it still exists.
@@ -320,7 +350,8 @@ public final class ChallengeManager {
 
     private DataStore.PersistedState persistedState() {
         SeedChoice pending = machine.phase() == RunPhase.RESETTING ? pendingChoice : null;
-        return new DataStore.PersistedState(machine.snapshot(), currentPaths, roster, pending, seedPosition, seedPicked, unconsumed);
+        return new DataStore.PersistedState(machine.snapshot(), currentPaths, roster, pending, seedPosition, seedPicked, unconsumed,
+                false, runEnd);
     }
 
     private void save() {
@@ -396,6 +427,9 @@ public final class ChallengeManager {
                 if (!takeOnlinePlayers(sender)) {
                     return;
                 }
+                runEnd.clear();
+                // The roster was just rebuilt from who is online, so this run can't be continued any more.
+                runEnd.markStartedOver();
                 machine.beginTransition();
                 save();
                 runTransition(messages.raw("default-reset-reason"), choice);
@@ -441,6 +475,7 @@ public final class ChallengeManager {
             return;
         }
         if (phase == RunPhase.RUNNING) {
+            recordPositions();
             endLog(Outcome.STOPPED, null, reasonText("reason-stopped", Placeholder.unparsed("player", sender.getName())));
         }
         cancel(victoryTask);
@@ -464,6 +499,7 @@ public final class ChallengeManager {
         cancel(victoryTask);
         cancel(fireworksTask);
         protection.clear();
+        recordPositions();
 
         // Never reuse a number that the state file, the run archive or a folder on disk already knows.
         int highestArchived = archive.highestRunNumber();
@@ -586,6 +622,7 @@ public final class ChallengeManager {
         RunWorlds next = t.worlds;
         machine.beginRun(t.newRun, next.overworld().getName(), next.overworld().getSeed());
         t.started = true;
+        runEnd.clear();
         logger.info("Run #" + t.newRun + " started in " + next.overworld().getName() + " (seed " + machine.seed() + ")");
         current = next;
         currentPaths = next.paths();
@@ -734,16 +771,16 @@ public final class ChallengeManager {
 
     /** Everyone online (with hardcorechallenge.play) is in the challenge; anyone who joins later is added. */
     private boolean takeOnlinePlayers(CommandSender sender) {
-        roster.clear();
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            if (player.hasPermission(HardcoreChallengePlugin.PERMISSION_PLAY)) {
-                roster.add(player.getUniqueId(), player.getName());
-            }
-        }
-        if (roster.isEmpty()) {
+        List<? extends Player> players = Bukkit.getOnlinePlayers().stream()
+                .filter(player -> player.hasPermission(HardcoreChallengePlugin.PERMISSION_PLAY))
+                .toList();
+        if (players.isEmpty()) {
+            // The roster stays as it is, so the run that ended can still be continued.
             sender.sendMessage(messages.chat("no-players"));
             return false;
         }
+        roster.clear();
+        players.forEach(player -> roster.add(player.getUniqueId(), player.getName()));
         return true;
     }
 
@@ -778,7 +815,16 @@ public final class ChallengeManager {
         }
 
         DeathRecord death = describeDeath(player, event, vanillaMessage);
-        if (settings.resetWhen().firstDeath()) {
+        // Recorded before anything is dropped or cleared, to give back if the run is continued. With first-death
+        // the player keeps their inventory as a spectator, so only the spot is needed.
+        boolean firstDeath = settings.resetWhen().firstDeath();
+        // Unique per death, so a later death of the same player never removes the drops of an earlier one.
+        String dropTag = machine.runNumber() + ":" + player.getUniqueId() + ":" + System.currentTimeMillis();
+        runEnd.recordDeath(player.getUniqueId(), firstDeath
+                ? Restore.dead(spotOf(player.getLocation()), null, 0)
+                : Restore.dead(spotOf(player.getLocation()), InventorySnapshot.capture(player.getInventory()),
+                        player.calculateTotalExperiencePoints(), dropTag));
+        if (firstDeath) {
             // Logged now, so it stays in the timeline even if a victory in the same tick overrides it.
             logEvent(TimelineEvent.Type.DEATH, player.getName(), death.cause());
             reportRunEndingDeath(death, vanillaMessage);
@@ -786,7 +832,7 @@ public final class ChallengeManager {
         }
 
         // The player is out: their things stay where they died, and the run goes on until enough are out.
-        dropLoot(event, player);
+        dropLoot(event, player, dropTag);
         PlayerResetter.clearItems(player);
         roster.joinRun(player.getUniqueId());
         roster.eliminate(player.getUniqueId());
@@ -809,7 +855,7 @@ public final class ChallengeManager {
     }
 
     /** Drops what the cancelled death would have dropped (items and experience) at the death spot. */
-    private void dropLoot(PlayerDeathEvent event, Player player) {
+    private void dropLoot(PlayerDeathEvent event, Player player, String tag) {
         Location where = player.getLocation();
         World world = where.getWorld();
         List<ItemStack> items = event.getKeepInventory()
@@ -817,12 +863,15 @@ public final class ChallengeManager {
                 : event.getDrops();
         for (ItemStack item : items) {
             if (item != null && !item.getType().isAir()) {
-                world.dropItemNaturally(where, item);
+                world.dropItemNaturally(where, item, drop -> drop.getPersistentDataContainer().set(dropKey, PersistentDataType.STRING, tag));
             }
         }
         int experience = event.getKeepLevel() ? player.calculateTotalExperiencePoints() : event.getDroppedExp();
         if (experience > 0) {
-            world.spawn(where, ExperienceOrb.class, orb -> orb.setExperience(experience));
+            world.spawn(where, ExperienceOrb.class, orb -> {
+                orb.setExperience(experience);
+                orb.getPersistentDataContainer().set(dropKey, PersistentDataType.STRING, tag);
+            });
         }
     }
 
@@ -1188,6 +1237,7 @@ public final class ChallengeManager {
 
         UUID id = target;
         roster.revive(id);
+        runEnd.forgetDeath(id);
         eliminations.removeIf(elimination -> elimination.death().playerId().equals(id));
         roster.joinRun(id);
         protection.grant(id, settings.spawnProtectionSeconds());
@@ -1210,6 +1260,359 @@ public final class ChallengeManager {
         announcer.chatAlways("revived",
                 Placeholder.unparsed("player", player.getName()),
                 Placeholder.unparsed("admin", sender.getName()));
+    }
+
+    // =================================================================== continue
+
+    /**
+     * /hcc continue: brings the run that just ended back to life instead of moving on to the next world.
+     * Works during a reset and after /hcc stop, for a run that was not won.
+     */
+    public void continueRun(CommandSender sender) {
+        int run = machine.runNumber();
+        RunLog past = archive.get(run);
+        boolean won = past != null && past.outcome() == Outcome.VICTORY;
+        boolean resetting = machine.phase() == RunPhase.RESETTING;
+        if (stateUnreadable || won || runEnd.startedOver() || machine.hasPendingDeath() || !machine.canContinue()
+                || (current == null && !resetting)) {
+            sender.sendMessage(messages.chat("continue-unavailable"));
+            return;
+        }
+        RunWorlds runWorlds = current;
+        if (runWorlds == null) {
+            // Restarted during the reset: the old worlds are not loaded, but their folders may still be there.
+            runWorlds = loadOldWorlds(run);
+            if (runWorlds == null) {
+                sender.sendMessage(messages.chat("continue-worlds-failed", Placeholder.unparsed("run", String.valueOf(run))));
+                return;
+            }
+        }
+        current = runWorlds;
+        currentPaths = runWorlds.paths();
+        // Worked out first: reopening the log drops the death the old data falls back on.
+        Map<UUID, Restore> restores = planRestores(past);
+
+        cancel(victoryTask);
+        cancel(fireworksTask);
+        cancelTransition();
+        // The reset never happened, so the seed it took from the list is not used up.
+        pendingChoice = SeedChoice.RANDOM;
+        seedPicked = -1;
+        machine.continueRun();
+        store.removePendingDeletions(currentPaths);
+        roster.clearEliminations();
+        eliminations.clear();
+        pendingDeathMessage = null;
+        reopenLog(past);
+        runEnd.clearRun();
+        restores.forEach(runEnd::putPending);
+        // Before any sweep: what a death dropped goes (now or when it loads) for everyone whose items go back.
+        restores.values().stream()
+                .filter(restore -> restore.hasItems() && restore.dropTag() != null)
+                .forEach(restore -> runEnd.addClearedDrop(restore.dropTag()));
+        save();
+        hud.showAll();
+        hud.update();
+        updateClock();
+
+        Location spawn = runWorlds.spawn();
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            UUID id = player.getUniqueId();
+            Restore restore = restores.get(id);
+            if (restore != null) {
+                applyRestore(player, restore);
+            } else if (roster.isParticipant(id) && roster.needsSync(id, run)) {
+                // Joined during the countdown, so not in this run yet: in like a late joiner.
+                moveIntoRun(player, spawn);
+                sendWelcome(player);
+            }
+        }
+        for (Map.Entry<UUID, Restore> entry : restores.entrySet()) {
+            if (entry.getValue().hasItems() && Bukkit.getPlayer(entry.getKey()) == null) {
+                // Offline: their items go back when they join, but the copy on the ground goes now.
+                clearDeathDrops(run, entry.getValue());
+            }
+        }
+        save();
+        flushLive(true);
+        enforceResetRule();
+        logger.info("Run #" + run + " was continued by " + sender.getName() + " at " + TimeFormat.clock(machine.elapsedMillis()));
+        announcer.chatAlways("continued",
+                Placeholder.unparsed("player", sender.getName()),
+                Placeholder.unparsed("run", String.valueOf(run)));
+    }
+
+    /** Loads the worlds of a run that is not loaded, if all its folders are still on disk. Null if not. */
+    private RunWorlds loadOldWorlds(int run) {
+        if (currentPaths.isEmpty() || !currentPaths.stream().allMatch(path -> Files.isDirectory(Paths.get(path)))) {
+            return null;
+        }
+        return worlds.load(run, machine.seed(), currentPaths).orElse(null);
+    }
+
+    /**
+     * What each participant of the run gets back. Dead ones (out, or whose death ended the run) go to where they
+     * died with their inventory if it was recorded. The others go to where they were when the run ended
+     * (online) or stay where they logged out if nothing was recorded (offline). Participants who were never in this
+     * run are not in it.
+     * Runs from before this was recorded fall back to the run log's death and to where people are now.
+     */
+    private Map<UUID, Restore> planRestores(RunLog past) {
+        int run = machine.runNumber();
+        DeathRecord ended = past != null ? past.death() : null;
+        Map<UUID, Restore> restores = new LinkedHashMap<>();
+        for (UUID id : roster.participants().keySet()) {
+            if (roster.needsSync(id, run)) {
+                continue;
+            }
+            Restore waiting = runEnd.pending(id);
+            if (waiting != null) {
+                // Already waiting from an earlier continue that they have not been put back by.
+                restores.put(id, waiting);
+                continue;
+            }
+            Player online = Bukkit.getPlayer(id);
+            Restore death = runEnd.deaths().get(id);
+            boolean endedIt = ended != null && ended.playerId().equals(id);
+            if (death != null || endedIt || roster.isEliminated(id)) {
+                Spot spot = death != null ? death.spot() : null;
+                if (spot == null && endedIt && ended.world() != null) {
+                    spot = new Spot(ended.world(), ended.x() + 0.5, ended.y(), ended.z() + 0.5, 0f, 0f);
+                }
+                if (spot == null && online != null && isRunWorld(online.getWorld())) {
+                    spot = spotOf(online.getLocation());
+                }
+                restores.put(id, death != null
+                        ? new Restore(spot, death.items(), death.experience(), true, death.dropTag())
+                        : Restore.dead(spot, null, 0));
+            } else {
+                // Where they were when the run ended, even if they moved or logged out as a spectator since.
+                Spot spot = runEnd.positions().get(id);
+                if (spot == null && online != null && isRunWorld(online.getWorld())) {
+                    spot = spotOf(online.getLocation());
+                }
+                restores.put(id, Restore.alive(spot));
+            }
+        }
+        return restores;
+    }
+
+    /** Makes the finished log of the continued run live again, or starts one like recoverRunLogs if it is gone. */
+    private void reopenLog(RunLog past) {
+        int run = machine.runNumber();
+        liveDetached = false;
+        liveDirty = true;
+        if (past != null) {
+            past.reopen();
+            live = past;
+            return;
+        }
+        // Missing, or its file could not be read: the file on disk stays as it is, like after a restart.
+        live = new RunLog(run, machine.seed(), machine.worldName(), machine.startedAt(), null, false);
+        roster.runParticipants().forEach(live::addParticipant);
+        liveDetached = archive.hasFile(run);
+        if (liveDetached) {
+            logger.warning("Run #" + run + " was continued but runs/run-" + run + ".yml could not be used."
+                    + " Leaving it untouched; the rest of this run will not be saved.");
+        }
+    }
+
+    /** Where the active participants who are playing are, so a run that ends can be continued from there. */
+    private void recordPositions() {
+        if (current == null) {
+            return;
+        }
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            // Spectators are not playing (they are out, or the run is already over), so their spot does not count.
+            if (roster.isActive(player.getUniqueId()) && player.getGameMode() != GameMode.SPECTATOR && isRunWorld(player.getWorld())) {
+                runEnd.recordPosition(player.getUniqueId(), spotOf(player.getLocation()));
+            }
+        }
+    }
+
+    /**
+     * Puts a participant back as the continued run has them: at their spot (moved to safe ground if it is not),
+     * with their inventory if it was recorded, in survival, with spawn protection. Later if they are not online.
+     */
+    private void applyRestore(Player player, Restore restore) {
+        UUID id = player.getUniqueId();
+        int run = machine.runNumber();
+        Location wanted = restoreLocation(player, restore.spot());
+        protection.grant(id, settings.spawnProtectionSeconds());
+        // Two chunks is at least 32 blocks each way, more than SafeSpot reads (its search radius plus the lava check).
+        loadChunksAround(wanted, 2).whenComplete((chunks, error) -> onMain(() -> {
+            if (!canRestore(player, run)) {
+                return;
+            }
+            if (restore.hasItems() && restore.dropTag() != null) {
+                // Before the items go back, so nothing is there twice.
+                removeDeathDrops(chunks == null ? List.of() : chunks);
+            }
+            Location target = safeLocation(wanted);
+            player.teleportAsync(target).whenComplete((success, teleportError) -> onMain(() -> {
+                if (!canRestore(player, run)) {
+                    return;
+                }
+                if (teleportError != null || !Boolean.TRUE.equals(success)) {
+                    player.teleport(target);
+                }
+                if (restore.hasItems()) {
+                    InventorySnapshot.apply(player, restore.items(), restore.experience(), logger);
+                }
+                if (restore.revive()) {
+                    PlayerResetter.revive(player);
+                } else {
+                    player.setFallDistance(0f);
+                    player.setGameMode(GameMode.SURVIVAL);
+                }
+                protection.grant(id, settings.spawnProtectionSeconds());
+                runEnd.removePending(id);
+                save();
+            }));
+        }));
+    }
+
+    private boolean canRestore(Player player, int run) {
+        return player.isOnline() && machine.runNumber() == run && machine.phase() == RunPhase.RUNNING
+                && roster.isActive(player.getUniqueId());
+    }
+
+    /** The saved spot if it is in a run world; otherwise where the player is, if that is in one, else the run spawn. */
+    private Location restoreLocation(Player player, Spot spot) {
+        if (spot != null) {
+            Location saved = locationOf(spot);
+            return saved != null ? saved : current.spawn();
+        }
+        return isRunWorld(player.getWorld()) ? player.getLocation() : current.spawn();
+    }
+
+    /** The spot as a location, or null if its world is not one of the run's. */
+    private Location locationOf(Spot spot) {
+        World world = Bukkit.getWorld(spot.world());
+        if (world == null || !isRunWorld(world)) {
+            return null;
+        }
+        return new Location(world, spot.x(), spot.y(), spot.z(), spot.yaw(), spot.pitch());
+    }
+
+    /** The spot if a player can stand there safely, else the nearest safe place, else the run spawn. */
+    private Location safeLocation(Location wanted) {
+        try {
+            Optional<SafeSpot.Block> found = SafeSpot.find(new BlockTerrain(wanted.getWorld()),
+                    wanted.getBlockX(), wanted.getBlockY(), wanted.getBlockZ());
+            if (found.isPresent()) {
+                SafeSpot.Block block = found.get();
+                if (block.x() == wanted.getBlockX() && block.y() == wanted.getBlockY() && block.z() == wanted.getBlockZ()) {
+                    return wanted;
+                }
+                return new Location(wanted.getWorld(), block.x() + 0.5, block.y(), block.z() + 0.5, wanted.getYaw(), wanted.getPitch());
+            }
+        } catch (RuntimeException e) {
+            logger.log(java.util.logging.Level.WARNING, "Could not check " + wanted + " for a safe spot", e);
+        }
+        return current.spawn();
+    }
+
+    /** Loads the chunks around a place (a radius in chunks) and returns the ones that loaded. */
+    private CompletableFuture<List<Chunk>> loadChunksAround(Location where, int radius) {
+        World world = where.getWorld();
+        int centerX = where.getBlockX() >> 4;
+        int centerZ = where.getBlockZ() >> 4;
+        List<CompletableFuture<Chunk>> loads = new ArrayList<>();
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                loads.add(world.getChunkAtAsync(centerX + dx, centerZ + dz));
+            }
+        }
+        return CompletableFuture.allOf(loads.toArray(CompletableFuture[]::new)).handle((ignored, error) -> {
+            List<Chunk> chunks = new ArrayList<>();
+            for (CompletableFuture<Chunk> load : loads) {
+                if (load.isDone() && !load.isCompletedExceptionally() && load.join() != null) {
+                    chunks.add(load.join());
+                }
+            }
+            return chunks;
+        });
+    }
+
+    /** Removes what a player's death dropped, for a player who is offline now and gets their items back on joining. */
+    private void clearDeathDrops(int run, Restore restore) {
+        Location where = restore.spot() == null ? null : locationOf(restore.spot());
+        if (where == null || restore.dropTag() == null) {
+            return;
+        }
+        loadChunksAround(where, 2).whenComplete((chunks, error) -> onMain(() -> {
+            if (machine.runNumber() == run && current != null) {
+                removeDeathDrops(chunks == null ? List.of() : chunks);
+            }
+        }));
+    }
+
+    /**
+     * Removes the items and experience that deaths dropped (marked when they were dropped) whose items went back to
+     * their owners: in the chunks around the death spots and anywhere else in the run's loaded chunks. What a teammate
+     * picked up is gone. Entities of chunks that are not loaded yet are handled when they load.
+     */
+    private void removeDeathDrops(List<Chunk> around) {
+        if (runEnd.clearedDrops().isEmpty()) {
+            return;
+        }
+        int removed = 0;
+        for (Chunk chunk : around) {
+            for (Entity entity : chunk.getEntities()) {
+                removed += removeIfDrop(entity);
+            }
+        }
+        if (current != null) {
+            for (World world : current.all()) {
+                for (Entity entity : world.getEntitiesByClasses(Item.class, ExperienceOrb.class)) {
+                    removed += removeIfDrop(entity);
+                }
+            }
+        }
+        if (removed > 0) {
+            logger.info("Removed " + removed + " item(s) and orb(s) dropped by deaths whose items were given back");
+        }
+    }
+
+    /** Entities that just loaded in a run world: removes the death drops that were given back already. */
+    public void removeLoadedDeathDrops(World world, List<Entity> entities) {
+        if (runEnd.clearedDrops().isEmpty() || !isRunWorld(world)) {
+            return;
+        }
+        int removed = 0;
+        for (Entity entity : entities) {
+            removed += removeIfDrop(entity);
+        }
+        if (removed > 0) {
+            logger.info("Removed " + removed + " item(s) and orb(s) dropped by deaths whose items were given back (loaded later)");
+        }
+    }
+
+    /** Whether two dropped items (or orbs) may merge: not if they belong to different deaths, or one is not from a death. */
+    public boolean sameDeathDrop(Entity first, Entity second) {
+        String a = first.getPersistentDataContainer().get(dropKey, PersistentDataType.STRING);
+        String b = second.getPersistentDataContainer().get(dropKey, PersistentDataType.STRING);
+        return Objects.equals(a, b);
+    }
+
+    /** Only ground items and orbs carrying a tag of a cleared death are touched, never anything a player has. */
+    private int removeIfDrop(Entity entity) {
+        // No isValid check: entities in a load event may not be marked valid yet.
+        if (!(entity instanceof Item || entity instanceof ExperienceOrb)) {
+            return 0;
+        }
+        String tag = entity.getPersistentDataContainer().get(dropKey, PersistentDataType.STRING);
+        if (tag != null && runEnd.clearedDrops().contains(tag)) {
+            entity.remove();
+            return 1;
+        }
+        return 0;
+    }
+
+    private static Spot spotOf(Location location) {
+        return new Spot(location.getWorld().getName(), location.getX(), location.getY(), location.getZ(),
+                location.getYaw(), location.getPitch());
     }
 
     /** Names of participants who are out of the current run, for tab completion. */
@@ -1452,6 +1855,7 @@ public final class ChallengeManager {
         RunPhase phase = machine.phase();
         if (phase == RunPhase.IDLE) {
             if (current != null && isRunWorld(player.getWorld())) {
+                recordLogoutSpot(player);
                 player.setGameMode(GameMode.SPECTATOR);
             }
             return;
@@ -1476,6 +1880,15 @@ public final class ChallengeManager {
         Location spawn = current.spawn();
         updateClock();
         if (phase == RunPhase.RUNNING && roster.isActive(id)) {
+            Restore pending = runEnd.pending(id);
+            if (pending != null) {
+                if (!roster.needsSync(id, machine.runNumber())) {
+                    // The run was continued while they were away: they get back what they had.
+                    applyRestore(player, pending);
+                    return;
+                }
+                runEnd.removePending(id);
+            }
             if (roster.needsSync(id, machine.runNumber())) {
                 // They were away when the run changed (or are new): bring them into this one fresh.
                 moveIntoRun(player, spawn);
@@ -1494,10 +1907,37 @@ public final class ChallengeManager {
 
         // Spectators: players without hardcorechallenge.play, players who are out of this run,
         // or anyone during a reset / victory.
+        if (phase == RunPhase.RESETTING) {
+            recordLogoutSpot(player);
+        }
         player.setGameMode(GameMode.SPECTATOR);
         if (!isRunWorld(player.getWorld())) {
             player.teleportAsync(spawn);
         }
+    }
+
+    /**
+     * A participant who was offline when the run ended is where they logged out. Noted before they fly around as a
+     * spectator, so continuing the run puts them back there.
+     */
+    private void recordLogoutSpot(Player player) {
+        UUID id = player.getUniqueId();
+        if (current == null || !isRunWorld(player.getWorld()) || !roster.isActive(id) || roster.needsSync(id, machine.runNumber())
+                || runEnd.positions().containsKey(id) || runEnd.deaths().containsKey(id)) {
+            return;
+        }
+        Restore pending = runEnd.pending(id);
+        if (pending != null) {
+            // A restore waiting without a spot gets the logout spot, so a second continue puts them back there.
+            if (pending.spot() == null) {
+                runEnd.putPending(id, new Restore(spotOf(player.getLocation()), pending.items(), pending.experience(),
+                        pending.revive(), pending.dropTag()));
+                save();
+            }
+            return;
+        }
+        runEnd.recordPosition(id, spotOf(player.getLocation()));
+        save();
     }
 
     /** Puts an active participant who is still spectating back in survival. */

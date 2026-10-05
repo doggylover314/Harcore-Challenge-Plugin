@@ -110,6 +110,11 @@ messages:
   revive-not-found: "<red><player> is not out of the run."
   revive-offline: "<red><player> has to be online to be revived."
 
+  # continued: <player> (the admin) <run>. continue-worlds-failed: <run>. continue-unavailable has none.
+  continued: "<green><player> brought run #<run> back to life. Everyone is back in it."
+  continue-unavailable: "<red>/hcc continue only works during a reset or after /hcc stop, for a run that was not won, and not after /hcc start."
+  continue-worlds-failed: "<red>The worlds of run #<run> could not be loaded, so it can't be continued. See the console."
+
   # /hcc seeds. seeds-header: <mode> <count>. seeds-empty: <mode>. seeds-line and seeds-line-next: <number> <seed>
   seeds-header: "<gold><bold>Seed list</bold></gold> <gray>(mode: <white><mode></white>, <count> in the list)"
   seeds-empty: "<gray>The seed list is empty (mode: <white><mode></white>), so runs use random seeds. Add one with /hcc seeds add <seed>."
@@ -316,6 +321,7 @@ messages:
     <yellow>/hcc resetwhen <first-death|N%></yellow> <gray>- when deaths end the run</gray>
     <yellow>/hcc seeds [add <seed> | remove <number> | clear | mode <once|cycle>]</yellow> <gray>- seeds for the next runs</gray>
     <yellow>/hcc revive <player></yellow> <gray>- bring back a player who is out</gray>
+    <yellow>/hcc continue</yellow> <gray>- during a reset or after /hcc stop, go on with the run that ended</gray>
     <yellow>/hcc reload</yellow> <gray>- reload config.yml</gray>
 
   # Shown to players without hardcorechallenge.admin
