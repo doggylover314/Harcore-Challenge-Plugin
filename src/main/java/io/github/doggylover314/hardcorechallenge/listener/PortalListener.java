@@ -2,19 +2,26 @@ package io.github.doggylover314.hardcorechallenge.listener;
 
 import io.github.doggylover314.hardcorechallenge.ChallengeManager;
 import io.github.doggylover314.hardcorechallenge.world.RunWorlds;
+import io.papermc.paper.event.entity.EntityPortalReadyEvent;
 import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.PortalType;
 import org.bukkit.World;
 import org.bukkit.block.Block;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.entity.EntityPortalEnterEvent;
 import org.bukkit.event.entity.EntityPortalEvent;
 import org.bukkit.event.player.PlayerPortalEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
 
 /**
  * Keeps portals inside the current run: overworld ⇄ {@code _nether} and overworld/nether →
@@ -25,9 +32,61 @@ public final class PortalListener implements Listener {
     private static final double NETHER_SCALE = 8.0;
 
     private final ChallengeManager manager;
+    /** Entities on their way to a run End, so a portal they stand in does not start a second teleport. */
+    private final Set<UUID> enteringEnd = ConcurrentHashMap.newKeySet();
 
     public PortalListener(ChallengeManager manager) {
         this.manager = manager;
+    }
+
+    /**
+     * The server picks the nether target from its own worlds and gives up when the main nether is
+     * off (allow-nether=false). Point it at the run's world so the portal event still fires.
+     */
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onPortalReady(EntityPortalReadyEvent event) {
+        if (event.getPortalType() != PortalType.NETHER) {
+            return;
+        }
+        Optional<RunWorlds> worlds = manager.currentWorlds();
+        if (worlds.isEmpty()) {
+            return;
+        }
+        RunWorlds run = worlds.get();
+        World source = event.getEntity().getWorld();
+        if (source.equals(run.overworld())) {
+            event.setTargetWorld(run.nether());
+        } else if (source.equals(run.nether())) {
+            event.setTargetWorld(run.overworld());
+        }
+    }
+
+    /**
+     * Entering the End from a run world is handled here, before the server starts. Vanilla builds
+     * its platform in the main End first and does nothing when there is no main End (allow-end=false).
+     */
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onPortalEnter(EntityPortalEnterEvent event) {
+        if (event.getPortalType() != PortalType.ENDER) {
+            return;
+        }
+        Optional<RunWorlds> worlds = manager.currentWorlds();
+        Entity entity = event.getEntity();
+        if (worlds.isEmpty()) {
+            return;
+        }
+        RunWorlds run = worlds.get();
+        World source = entity.getWorld();
+        // Leaving the End goes through the respawn handling below.
+        if (!run.contains(source) || source.equals(run.end())) {
+            return;
+        }
+        event.setCancelled(true);
+        UUID id = entity.getUniqueId();
+        if (enteringEnd.add(id)) {
+            entity.teleportAsync(endPlatform(run.end()), PlayerTeleportEvent.TeleportCause.END_PORTAL)
+                    .whenComplete((moved, error) -> enteringEnd.remove(id));
+        }
     }
 
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)

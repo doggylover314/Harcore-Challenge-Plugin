@@ -4,9 +4,9 @@ plugins {
 }
 
 group = "io.github.doggylover314"
-version = "1.2.0"
+version = "1.4.0"
 
-val paperVersion = "26.2.build.129-stable"
+val paperVersion = "26.3.build.152-beta"
 
 repositories {
     mavenCentral()

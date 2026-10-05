@@ -171,9 +171,9 @@ public final class ChallengeManager {
         this.settings = settings;
         this.messages = messages;
         this.store = new DataStore(plugin.getDataPath(), logger);
-        this.worlds = new WorldService(plugin, store, () -> currentPaths);
-        this.machine = new RunStateMachine(() -> System.nanoTime() / 1_000_000L, System::currentTimeMillis);
         this.archive = new RunArchive(plugin.getDataPath(), store, logger);
+        this.worlds = new WorldService(plugin, store, () -> currentPaths, archive::hasFile);
+        this.machine = new RunStateMachine(() -> System.nanoTime() / 1_000_000L, System::currentTimeMillis);
         this.tracker = new RunTracker(this);
         this.reports = new RunReports(() -> this.messages, run -> machine.elapsedMillis());
     }
@@ -826,7 +826,7 @@ public final class ChallengeManager {
                         player.calculateTotalExperiencePoints(), dropTag));
         if (firstDeath) {
             // Logged now, so it stays in the timeline even if a victory in the same tick overrides it.
-            logEvent(TimelineEvent.Type.DEATH, player.getName(), death.cause());
+            logEvent(TimelineEvent.Type.DEATH, player.getName(), death.message() != null && !death.message().isBlank() ? death.message() : death.cause());
             reportRunEndingDeath(death, vanillaMessage);
             return;
         }
@@ -1318,6 +1318,11 @@ public final class ChallengeManager {
         Location spawn = runWorlds.spawn();
         for (Player player : Bukkit.getOnlinePlayers()) {
             UUID id = player.getUniqueId();
+            if (!roster.isParticipant(id) && player.hasPermission(HardcoreChallengePlugin.PERMISSION_PLAY)) {
+                // Joined while the challenge was stopped, so handleJoin did not add them.
+                roster.add(id, player.getName());
+                logEvent(TimelineEvent.Type.PARTICIPANT_ADDED, player.getName(), null);
+            }
             Restore restore = restores.get(id);
             if (restore != null) {
                 applyRestore(player, restore);

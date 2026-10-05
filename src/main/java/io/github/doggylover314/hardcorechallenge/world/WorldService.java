@@ -27,6 +27,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.IntPredicate;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -61,14 +62,18 @@ public final class WorldService {
     private final ExecutorService cleanup;
     private final Supplier<Collection<String>> currentRunPaths;
     private final SpawnFinder spawnFinder;
+    /** Whether a run was played, i.e. has a saved run log. Main thread only. */
+    private final IntPredicate wasPlayed;
     /** Run numbers whose worlds are being created right now (main thread only). */
     private final Set<Integer> creating = new HashSet<>();
 
     /**
      * @param currentRunPaths folders of the current (or kept) run; these are never deleted, loaded or not
+     * @param wasPlayed       whether a run number belongs to a run that was played; only those are archived on startup
      */
-    public WorldService(Plugin plugin, DataStore store, Supplier<Collection<String>> currentRunPaths) {
+    public WorldService(Plugin plugin, DataStore store, Supplier<Collection<String>> currentRunPaths, IntPredicate wasPlayed) {
         this.plugin = plugin;
+        this.wasPlayed = wasPlayed;
         this.store = store;
         this.currentRunPaths = currentRunPaths;
         this.spawnFinder = new SpawnFinder(plugin);
@@ -252,7 +257,8 @@ public final class WorldService {
                 paths.remove(path);
                 continue;
             }
-            if (Bukkit.unloadWorld(world, false)) {
+            // An archived world keeps what happened since the last autosave, a deleted one does not need it.
+            if (Bukkit.unloadWorld(world, keepOld > 0)) {
                 logger.info("Unloaded " + world.getName());
             } else {
                 // Could not unload (someone is still inside). It will not be loaded again after a
@@ -297,6 +303,12 @@ public final class WorldService {
         List<Path> protectedRoots = protectedRoots();
         List<Path> allowedRoots = allowedRoots();
         logger.info("Retrying deletion of " + pending.size() + " old world folder(s)");
+        // Leftovers of a half-created run are deleted, not archived as if they had been played.
+        Set<Integer> played = new HashSet<>();
+        for (String raw : pending) {
+            WorldNames.runNumberOf(String.valueOf(Paths.get(raw).getFileName()))
+                    .stream().filter(wasPlayed).forEach(played::add);
+        }
         cleanup.execute(() -> {
             List<String> done = new ArrayList<>();
             for (String raw : pending) {
@@ -317,7 +329,7 @@ public final class WorldService {
                     continue;
                 }
                 OptionalInt runNumber = WorldNames.runNumberOf(String.valueOf(path.getFileName()));
-                boolean archiveIt = keepOld > 0 && runNumber.isPresent() && Files.exists(path);
+                boolean archiveIt = keepOld > 0 && runNumber.isPresent() && played.contains(runNumber.getAsInt()) && Files.exists(path);
                 if (archiveIt ? archive(runNumber.getAsInt(), path) : deleteWithRetries(path)) {
                     done.add(raw);
                 }

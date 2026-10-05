@@ -219,10 +219,19 @@ public final class RunReports {
     public Component describe(TimelineEvent event, DeathRecord death) {
         Messages m = messages.get();
         String key = "event-" + event.type().name().toLowerCase(Locale.ROOT).replace('_', '-');
+        // Death entries hold the vanilla message or the cause as typed text, so names in it stay as they are.
+        boolean deathEntry = event.type() == TimelineEvent.Type.DEATH || event.type() == TimelineEvent.Type.ELIMINATED;
+        String detail = event.detail() == null ? "" : deathEntry ? event.detail() : detailName(event.detail());
+        Component deathMessage = Component.text(detail);
+        // Older logs only kept the cause; for the death that ended the run the record has the message.
+        if (event.type() == TimelineEvent.Type.DEATH && death != null && death.playerName().equals(event.player())
+                && death.cause().equals(event.detail())) {
+            deathMessage = deathText(m, death);
+        }
         return m.plain(key,
                 Placeholder.unparsed("player", event.player() == null ? "?" : event.player()),
-                Placeholder.unparsed("detail", detailName(event.detail())),
-                Placeholder.component("death_message", death != null ? deathText(m, death) : Component.text(detailName(event.detail()))));
+                Placeholder.unparsed("detail", detail),
+                Placeholder.component("death_message", deathMessage));
     }
 
     /** The stored vanilla death message, or the damage cause (message {@code death-no-message}) if there is none. */

@@ -60,7 +60,7 @@ victory:
   fireworks: true
 
 # Sound played for each event, as a namespaced key like minecraft:entity.ender_dragon.death.
-# Leave one empty to play nothing. All sounds are off if announce.sound is false.
+# Set one to '' (two quotes) to play nothing; a bare key with no value keeps the default. All sounds are off if announce.sound is false.
 sounds:
   countdown-tick: minecraft:block.note_block.hat
   run-start: minecraft:entity.player.levelup
@@ -133,10 +133,10 @@ messages:
   seeds-used-up: "<yellow>The seed list is empty. The next runs use random seeds."
 
   # Sent to a player who joins a run that is already under way: <run> <count> <total> <time>
-  # Leave empty to turn it off.
+  # Set it to '' (two quotes) to turn it off; a bare key with no value keeps the default.
   late-join-welcome: "<green>You joined run <white>#<run></white>. <white><count>/<total></white> bosses down. One life for everyone."
 
-  # Shown on the action bar while spawn protection lasts: <seconds>. Leave empty to turn it off.
+  # Shown on the action bar while spawn protection lasts: <seconds>. Set it to '' (two quotes) to turn it off.
   spawn-protection-actionbar: "<aqua>Spawn protection: <white><seconds>s"
 
   # Countdown and reset: <seconds> <reason> (<seconds> only in the countdown messages)
@@ -292,7 +292,7 @@ messages:
   event-run-ended: "<gray>Run ended: <detail>"
 
   # Shown in chat when a run ends by death or a forced reset, as the countdown starts.
-  # Leave recap-header blank to turn the whole recap off, or blank any single line to hide just that line.
+  # Set recap-header to '' (two quotes) to turn the whole recap off, or set any single line to '' to hide just that line.
   # recap-header: <run> <time>
   recap-header: "<gold><bold>Run #<run> recap</bold></gold> <gray>- lasted <white><time></white>"
   # <count> <total> <bosses>

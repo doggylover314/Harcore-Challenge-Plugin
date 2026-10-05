@@ -1,6 +1,6 @@
 # HardcoreChallenge
 
-Shared-fate hardcore for Paper 26.2. One person dies, everyone starts over in a new world.
+Shared-fate hardcore for Paper 26.3. One person dies, everyone starts over in a new world.
 Kill the Ender Dragon, Wither, Elder Guardian and Warden in one run to win.
 
 ## Features
@@ -20,7 +20,7 @@ Kill the Ender Dragon, Wither, Elder Guardian and Warden in one run to win.
 
 ## Requirements
 
-- Paper 26.2
+- Paper 26.3 (tested on build 152, still beta at release)
 - Java 25
 
 ## Download
