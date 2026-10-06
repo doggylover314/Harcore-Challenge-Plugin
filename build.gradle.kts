@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "io.github.doggylover314"
-version = "1.4.0"
+version = "1.3.0"
 
 val paperVersion = "26.3.build.152-beta"
 
