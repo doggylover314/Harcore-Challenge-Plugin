@@ -108,6 +108,45 @@ class RunStateMachineTest {
         }
 
         @Test
+        void deathStaysPendingInItsOwnTickAndResolvesOnTheNext() {
+            startRun(1);
+            machine.reportDeath(death("Steve"), 100);
+
+            // The scheduled resolve can run in the death's own tick; the death must stay pending then.
+            assertTrue(machine.resolvePendingDeath(100).isEmpty());
+            assertTrue(machine.hasPendingDeath(), "still pending, so the caller must try again");
+            assertEquals(RunPhase.RUNNING, machine.phase());
+
+            assertEquals("Steve", machine.resolvePendingDeath(101).orElseThrow().playerName());
+            assertFalse(machine.hasPendingDeath(), "nothing left to retry");
+            assertEquals(RunPhase.RESETTING, machine.phase());
+        }
+
+        @Test
+        void bossKillInTheDeathTickStillWinsWhileThePendingDeathIsRetried() {
+            machine.configure(List.of(Boss.WITHER), true, true);
+            startRun(1);
+            machine.reportDeath(death("Steve"), 100);
+            assertTrue(machine.resolvePendingDeath(100).isEmpty());
+            assertEquals(RunStateMachine.BossResult.VICTORY, machine.reportBossKill(Boss.WITHER, 100));
+            assertEquals(RunPhase.VICTORY, machine.phase());
+            assertTrue(machine.resolvePendingDeath(101).isEmpty());
+            assertFalse(machine.hasPendingDeath());
+        }
+
+        @Test
+        void bossKillOneTickAfterAPendingDeathIsIgnored() {
+            machine.configure(List.of(Boss.WITHER), true, true);
+            startRun(1);
+            machine.reportDeath(death("Steve"), 100);
+            assertTrue(machine.resolvePendingDeath(100).isEmpty());
+            assertEquals(RunStateMachine.BossResult.IGNORED, machine.reportBossKill(Boss.WITHER, 101));
+            assertFalse(machine.hasKilled(Boss.WITHER));
+            assertTrue(machine.resolvePendingDeath(101).isPresent());
+            assertEquals(RunPhase.RESETTING, machine.phase());
+        }
+
+        @Test
         void firstDeathWinsWhenSeveralLandInOneTick() {
             startRun(1);
             machine.reportDeath(death("Steve"), 100);

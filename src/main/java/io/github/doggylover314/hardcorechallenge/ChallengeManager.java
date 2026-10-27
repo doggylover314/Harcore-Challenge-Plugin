@@ -330,6 +330,10 @@ public final class ChallengeManager {
         hud.update();
         flushLive(false);
         showSpawnProtection();
+        if (machine.hasPendingDeath()) {
+            // Safety net: a pending death must never wait forever.
+            scheduleResolve();
+        }
         // Checkpoint the clock periodically so a crash loses at most a minute of run time.
         if (machine.phase() == RunPhase.RUNNING && Bukkit.getCurrentTick() % 1200 < 20) {
             save();
@@ -1219,6 +1223,11 @@ public final class ChallengeManager {
             sender.sendMessage(messages.chat("revive-unavailable"));
             return;
         }
+        if (machine.hasPendingDeath()) {
+            // The run is about to end; reviving now would be undone by the reset.
+            sender.sendMessage(messages.chat("revive-pending"));
+            return;
+        }
         UUID target = null;
         for (UUID id : roster.eliminated()) {
             if (name.equalsIgnoreCase(roster.participants().get(id))) {
@@ -1660,6 +1669,10 @@ public final class ChallengeManager {
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             resolveScheduled = false;
             machine.resolvePendingDeath(Bukkit.getCurrentTick()).ifPresent(this::endRunByDeath);
+            if (machine.hasPendingDeath()) {
+                // Ran in the same tick as the death (it came from a packet at tick start); try again next tick.
+                scheduleResolve();
+            }
         }, 1L);
     }
 

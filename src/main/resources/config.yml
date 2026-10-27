@@ -107,6 +107,7 @@ messages:
   # revived: <player> <admin>. The others: <player>
   revived: "<green><player> was revived by <admin>."
   revive-unavailable: "<red>/hcc revive only works while a run is going and reset-when is a percentage."
+  revive-pending: "<red>The run is ending, so nobody can be revived right now."
   revive-not-found: "<red><player> is not out of the run."
   revive-offline: "<red><player> has to be online to be revived."
 
